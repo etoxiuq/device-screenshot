@@ -1,0 +1,159 @@
+{
+  "name": "device-screenshot",
+  "displayName": "Device Screenshot (Android & iOS)",
+  "description": "Capture screenshots from connected Android & iOS physical devices (and simulators) directly in the Left Sidebar with 1-click Recapture, Copy to Clipboard, Send to AI Prompt, Markup, Eraser, Crop, Rotation, and Save.",
+  "version": "1.0.0",
+  "publisher": "etoxiuq",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/etoxiuq/device-screenshot.git"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other",
+    "Testing",
+    "Debuggers"
+  ],
+  "keywords": [
+    "android",
+    "ios",
+    "iphone",
+    "adb",
+    "screenshot",
+    "screencap",
+    "device",
+    "capture",
+    "markup",
+    "antigravity"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:deviceScreenshot.sidebarView"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "device-screenshot-sidebar",
+          "title": "Device Screenshot (Android / iOS)",
+          "icon": "media/sidebar-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "device-screenshot-sidebar": [
+        {
+          "type": "webview",
+          "id": "deviceScreenshot.sidebarView",
+          "name": "Device Screenshot"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "deviceScreenshot.capture",
+        "title": "Device Screenshot: Open Sidebar & Capture",
+        "icon": "$(device-camera)"
+      },
+      {
+        "command": "deviceScreenshot.openFullPanel",
+        "title": "Device Screenshot: Open in Large Editor Tab",
+        "icon": "$(screen-full)"
+      },
+      {
+        "command": "deviceScreenshot.openSettings",
+        "title": "Device Screenshot: Open Settings",
+        "icon": "$(gear)"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "deviceScreenshot.capture"
+        },
+        {
+          "command": "deviceScreenshot.openFullPanel"
+        },
+        {
+          "command": "deviceScreenshot.openSettings"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "deviceScreenshot.capture",
+        "key": "ctrl+shift+s",
+        "mac": "cmd+shift+y"
+      }
+    ],
+    "configuration": {
+      "title": "Device Screenshot (Android & iOS)",
+      "properties": {
+        "deviceScreenshot.language": {
+          "type": "string",
+          "default": "en",
+          "enum": [
+            "en",
+            "ko",
+            "ja",
+            "zh",
+            "hi",
+            "pt",
+            "fr",
+            "es",
+            "ms",
+            "vi",
+            "th",
+            "de"
+          ],
+          "enumDescriptions": [
+            "English (Default)",
+            "한국어 (Korean)",
+            "日本語 (Japanese)",
+            "中文 (简体 / Simplified Chinese)",
+            "हिन्दी (Hindi)",
+            "Português (Portuguese)",
+            "Français (French)",
+            "Español (Spanish)",
+            "Bahasa Melayu (Malay)",
+            "Tiếng Việt (Vietnamese)",
+            "ไทย (Thai)",
+            "Deutsch (German)"
+          ],
+          "description": "UI display language for Mobile Device Screenshot (default: English)."
+        },
+        "deviceScreenshot.defaultSaveDirectory": {
+          "type": "string",
+          "default": "",
+          "description": "Default directory for saving screenshots (defaults to ~/Desktop)."
+        },
+        "deviceScreenshot.adbPath": {
+          "type": "string",
+          "default": "",
+          "description": "Custom path to the adb executable (leave empty for auto-detection)."
+        },
+        "deviceScreenshot.showStatusBarButton": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the 'Screenshot' button in the status bar."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "npx @vscode/vsce package --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.3.3"
+  }
+}
