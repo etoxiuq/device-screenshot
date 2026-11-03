@@ -136,7 +136,7 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
         }
 
         case 'openIdeSettings': {
-          vscode.commands.executeCommand('workbench.action.openSettings', '@ext:kokzip.mobile-device-screenshot');
+          vscode.commands.executeCommand('workbench.action.openSettings', '@ext:etoxiuq.device-screenshot');
           break;
         }
 
