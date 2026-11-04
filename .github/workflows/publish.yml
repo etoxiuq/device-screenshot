@@ -39,16 +39,19 @@ jobs:
         run: npx @vscode/vsce package --allow-missing-repository
 
       - name: Publish to VS Code Marketplace
-        run: npx @vscode/vsce publish --packagePath "$VSIX_NAME" -p "${{ secrets.VSCE_PAT }}"
+        if: ${{ env.VSCE_PAT != '' }}
+        run: npx @vscode/vsce publish --packagePath "$VSIX_NAME" -p "$VSCE_PAT"
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
       - name: Publish to Open VSX Registry (Antigravity IDE & Open-source IDEs)
-        run: npx ovsx publish "$VSIX_NAME" -p "${{ secrets.OVSX_PAT }}"
+        if: ${{ env.OVSX_PAT != '' }}
+        run: npx ovsx publish "$VSIX_NAME" -p "$OVSX_PAT"
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
 
       - name: Create GitHub Release with VSIX
+        if: always() && steps.pkg.outputs.version != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.pkg.outputs.version }}
