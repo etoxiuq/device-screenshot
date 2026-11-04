@@ -76,13 +76,17 @@ export function activate(context: vscode.ExtensionContext) {
 
       let target: MobileDevice | undefined = devices[0];
       if (devices.length > 1) {
-        const items = devices.map((d) => ({
-          label: `${d.reality === 'physical' ? '$(device-mobile)' : '$(vm)'} ${d.name}`,
-          description: `${d.platform === 'android' ? 'Android' : 'iOS'} · ${
-            d.reality === 'physical' ? dict.physicalBadge : dict.simulatorBadge
-          }`,
-          device: d,
-        }));
+        const items = devices.map((d) => {
+          const transportLabel =
+            d.reality === 'physical'
+              ? (d.transport === 'wifi' ? 'Wi-Fi' : 'USB')
+              : (d.platform === 'android' ? 'Emulator' : dict.simulatorBadge);
+          return {
+            label: `${d.reality === 'physical' ? '$(device-mobile)' : '$(vm)'} ${d.name}`,
+            description: `${d.platform === 'android' ? 'Android' : 'iOS'} · ${transportLabel}`,
+            device: d,
+          };
+        });
         const picked = await vscode.window.showQuickPick(items, {
           placeHolder: dict.emptyTitle,
         });

@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 
 export type DevicePlatform = 'android' | 'ios';
 export type DeviceReality = 'physical' | 'simulator';
+export type DeviceTransport = 'usb' | 'wifi' | 'simulator';
 
 export interface MobileDevice {
   id: string;
@@ -15,10 +16,62 @@ export interface MobileDevice {
   platform: DevicePlatform;
   reality: DeviceReality;
   osVersion?: string;
-  transport?: string;
+  transport?: DeviceTransport;
 }
 
 export class DeviceManager {
+  private _cachedDevicesFingerprint = '';
+  private _pollTimer?: NodeJS.Timeout;
+  private _listenerCount = 0;
+  private _isPolling = false;
+  private _androidModelCache = new Map<string, string>();
+  private _onDidChangeDevices = new vscode.EventEmitter<MobileDevice[]>();
+  public readonly onDidChangeDevices: vscode.Event<MobileDevice[]> = this._onDidChangeDevices.event;
+
+  private getFingerprint(devices: MobileDevice[]): string {
+    return devices
+      .map((d) => `${d.id}|${d.transport}|${d.reality}|${d.name}`)
+      .sort()
+      .join(';;');
+  }
+
+  public startWatching(intervalMs = 1500): vscode.Disposable {
+    this._listenerCount++;
+    if (this._listenerCount === 1) {
+      this._pollTimer = setInterval(async () => {
+        await this.checkDevicesChange();
+      }, intervalMs);
+    }
+
+    return new vscode.Disposable(() => {
+      this._listenerCount = Math.max(0, this._listenerCount - 1);
+      if (this._listenerCount === 0 && this._pollTimer) {
+        clearInterval(this._pollTimer);
+        this._pollTimer = undefined;
+      }
+    });
+  }
+
+  private async checkDevicesChange(): Promise<void> {
+    if (this._isPolling) {
+      return;
+    }
+    this._isPolling = true;
+    try {
+      const prevFingerprint = this._cachedDevicesFingerprint;
+      const devices = await this.listDevices(false);
+      const newFingerprint = this.getFingerprint(devices);
+
+      if (newFingerprint !== prevFingerprint) {
+        this._cachedDevicesFingerprint = newFingerprint;
+        this._onDidChangeDevices.fire(devices);
+      }
+    } catch {
+      // ignore poll error
+    } finally {
+      this._isPolling = false;
+    }
+  }
   private getEnvWithPaths(): NodeJS.ProcessEnv {
     const home = os.homedir();
     const extraPaths = [
@@ -107,7 +160,7 @@ export class DeviceManager {
     });
   }
 
-  public async listDevices(): Promise<MobileDevice[]> {
+  public async listDevices(updateCache = true): Promise<MobileDevice[]> {
     const [androidDevices, iosPhysicalDevices, iosSimulators] = await Promise.all([
       this.listAndroidDevices(),
       this.listIosPhysicalDevices(),
@@ -123,6 +176,10 @@ export class DeviceManager {
       }
       return a.name.localeCompare(b.name);
     });
+
+    if (updateCache) {
+      this._cachedDevicesFingerprint = this.getFingerprint(all);
+    }
 
     return all;
   }
@@ -147,25 +204,31 @@ export class DeviceManager {
         }
 
         const isEmulator = serial.startsWith('emulator-');
-        let model = '';
-        for (const part of parts.slice(2)) {
-          if (part.startsWith('model:')) {
-            model = part.replace('model:', '').replace(/_/g, '-');
-          }
-        }
+        const isWifi = /:\d+$/.test(serial) || (!isEmulator && !trimmed.includes('usb:'));
+        const transport: DeviceTransport = isEmulator ? 'simulator' : isWifi ? 'wifi' : 'usb';
 
-        try {
-          const propRes = await this.execPromise(adb, ['-s', serial, 'shell', 'getprop', 'ro.product.model'], 2500);
-          const propModel = propRes.stdout.trim();
-          if (propModel) {
-            model = propModel;
-          }
-        } catch {
-          // Ignore getprop failure and keep parsed model
-        }
-
+        let model = this._androidModelCache.get(serial) || '';
         if (!model) {
-          model = serial;
+          for (const part of parts.slice(2)) {
+            if (part.startsWith('model:')) {
+              model = part.replace('model:', '').replace(/_/g, '-');
+            }
+          }
+
+          try {
+            const propRes = await this.execPromise(adb, ['-s', serial, 'shell', 'getprop', 'ro.product.model'], 2500);
+            const propModel = propRes.stdout.trim();
+            if (propModel) {
+              model = propModel;
+            }
+          } catch {
+            // Ignore getprop failure and keep parsed model
+          }
+
+          if (!model) {
+            model = serial;
+          }
+          this._androidModelCache.set(serial, model);
         }
 
         devices.push({
@@ -174,7 +237,7 @@ export class DeviceManager {
           model,
           platform: 'android',
           reality: isEmulator ? 'simulator' : 'physical',
-          transport: isEmulator ? 'emulator' : 'usb/wifi',
+          transport,
         });
       }
 
@@ -231,6 +294,19 @@ export class DeviceManager {
           seenUdids.add(udid);
         }
 
+        const rawTransport = String(
+          d?.properties?.connection?.transportType ||
+          d?.connectionProperties?.transportType ||
+          ''
+        ).toLowerCase();
+
+        let transport: DeviceTransport = 'usb';
+        if (rawTransport.includes('network') || rawTransport.includes('wifi') || rawTransport.includes('localnetwork')) {
+          transport = 'wifi';
+        } else if (rawTransport.includes('wired') || rawTransport.includes('usb')) {
+          transport = 'usb';
+        }
+
         devices.push({
           id: udid || identifier,
           udid,
@@ -239,7 +315,7 @@ export class DeviceManager {
           platform: 'ios',
           reality: 'physical',
           osVersion: osVer,
-          transport: d?.properties?.connection?.transportType || d?.connectionProperties?.transportType || 'usb',
+          transport,
         });
       }
     } catch {

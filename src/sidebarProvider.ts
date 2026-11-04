@@ -65,6 +65,29 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this._getHtmlForWebview();
 
+    const watchDisposable = this._deviceManager.startWatching(1500);
+
+    const changeSub = this._deviceManager.onDidChangeDevices((devices) => {
+      this._devices = devices;
+      if (this._selectedDevice) {
+        const found = this._devices.find((d) => d.id === this._selectedDevice!.id);
+        this._selectedDevice = found || this._devices[0] || undefined;
+      } else if (this._devices.length > 0) {
+        this._selectedDevice = this._devices[0];
+      }
+
+      this._view?.webview.postMessage({
+        command: 'devicesUpdated',
+        devices: this._devices,
+        selectedDeviceId: this._selectedDevice?.id || null,
+      });
+    });
+
+    webviewView.onDidDispose(() => {
+      watchDisposable.dispose();
+      changeSub.dispose();
+    });
+
     webviewView.webview.onDidReceiveMessage(async (msg) => {
       switch (msg.command) {
         case 'ready':
@@ -578,10 +601,17 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
       flex-shrink: 0;
     }
 
-    .badge-physical {
+    .badge-physical,
+    .badge-usb {
       background: rgba(46, 160, 67, 0.18);
       color: #4ac26b;
       border: 1px solid rgba(46, 160, 67, 0.38);
+    }
+
+    .badge-wifi {
+      background: rgba(56, 139, 253, 0.18);
+      color: #58a6ff;
+      border: 1px solid rgba(56, 139, 253, 0.38);
     }
 
     .badge-sim {
@@ -2154,17 +2184,35 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
         item.className = 'device-item' + (d.id === selectedId ? ' selected' : '');
 
         const isPhysical = d.reality === 'physical';
+        const isWifi = d.transport === 'wifi';
         const svgIcon = isPhysical ? SVG_PHONE : SVG_SIM;
         const platformLabel = d.platform === 'android' ? 'Android' : 'iOS';
-        const badgeClass = isPhysical ? 'badge badge-physical' : 'badge badge-sim';
-        const badgeText = isPhysical ? t('physicalBadge') : t('simulatorBadge');
+        const transportLabel = isPhysical
+          ? isWifi
+            ? t('wifiBadge')
+            : t('usbBadge')
+          : d.platform === 'android'
+          ? 'Emulator'
+          : 'Simulator';
+
+        let badgeClass = 'badge badge-sim';
+        let badgeText = t('simulatorBadge');
+        if (isPhysical) {
+          if (isWifi) {
+            badgeClass = 'badge badge-wifi';
+            badgeText = t('wifiBadge');
+          } else {
+            badgeClass = 'badge badge-usb';
+            badgeText = t('usbBadge');
+          }
+        }
 
         item.innerHTML = \`
           <div class="device-info">
             <span class="device-icon">\${svgIcon}</span>
             <div class="device-text">
               <span class="device-name">\${d.name}</span>
-              <span class="device-sub">\${platformLabel} · \${d.id}</span>
+              <span class="device-sub">\${platformLabel} · \${transportLabel} · \${d.id}</span>
             </div>
           </div>
           <span class="\${badgeClass}">\${badgeText}</span>

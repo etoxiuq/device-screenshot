@@ -9,6 +9,8 @@ Capture live screenshots from connected **Android & iOS physical devices** (as w
 ## Key Features (English)
 
 ### 1. Physical Device First (Android & iOS)
+- **Real-Time Hotplug Auto-Detection**: Automatically detects device connection and disconnection (USB cable plug/unplug) in 1~2 seconds without manual refresh.
+- **Visual USB vs Wi-Fi Badges**: Displays vibrant visual badges distinguishing wired `[USB]`, wireless network debugging `[Wi-Fi]`, and virtual `[Simulator]` / `[Emulator]`.
 - **Android Physical Devices & Emulators**: Automatically detects USB and wireless debugging devices via `adb` (`adb exec-out screencap -p`) and sorts physical devices to the top.
 - **iPhone / iPad Physical Devices**: Supports real iOS devices on macOS via Xcode `xcrun devicectl` (iOS 17+) and `idevicescreenshot` (`libimobiledevice`).
 - **iOS Simulators**: Supports booted Xcode iOS Simulators via `xcrun simctl`.
@@ -50,6 +52,8 @@ Full UI localization (selectable via the header **Settings** button or IDE Setti
 ![사이드바 캡처 및 다국어 UI](media/preview-sidebar.png)
 
 ### 1. 실기기 우선 감지 (Android & iOS Physical Devices)
+- **실시간 Hotplug 자동 감지**: USB 케이블 연결/분리 시 새로고침 버튼을 누르지 않아도 1~2초 내에 기기 목록이 자동으로 갱신됩니다.
+- **USB 유선 vs Wi-Fi 무선 구분 뱃지**: 기기가 케이블 유선으로 연결되었는지(`[USB]`), Wi-Fi 무선 디버깅으로 연결되었는지(`[Wi-Fi]`) 직관적인 컬러 뱃지와 서브 텍스트로 명확히 표시합니다.
 - **Android 실기기 및 에뮬레이터**: USB 및 무선 디버깅으로 연결된 기기를 `adb`로 자동 감지하며, 실기기를 목록 최상단에 우선 배치합니다.
 - **iPhone / iPad 실기기**: macOS Xcode의 `xcrun devicectl` (iOS 17+) 및 `libimobiledevice`(`idevicescreenshot`)를 통해 연결된 실기기를 즉시 캡처합니다.
 - **깔끔한 초기 대기 화면**: 사이드바를 열었을 때 임의로 캡처하지 않고, 원하는 기기를 클릭했을 때 즉시 캡처가 수행됩니다.

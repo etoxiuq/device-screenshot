@@ -71,6 +71,27 @@ export class ScreenshotPanel {
 
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
+    const watchDisposable = this._deviceManager.startWatching();
+    this._disposables.push(watchDisposable);
+
+    this._disposables.push(
+      this._deviceManager.onDidChangeDevices((devices) => {
+        this._devices = devices;
+        if (this._currentDevice) {
+          const found = this._devices.find((d) => d.id === this._currentDevice.id);
+          this._currentDevice = found || this._devices[0] || this._currentDevice;
+          if (this._currentDevice) {
+            this._panel.title = `Screenshot of ${this._currentDevice.name}`;
+          }
+        }
+        this._panel.webview.postMessage({
+          command: 'devicesUpdated',
+          devices: this._devices,
+          currentDeviceId: this._currentDevice?.id,
+        });
+      })
+    );
+
     this._disposables.push(
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration('deviceScreenshot.language')) {
@@ -1593,11 +1614,12 @@ export class ScreenshotPanel {
       devices.forEach((d) => {
         const opt = document.createElement('option');
         opt.value = d.id;
+        const transportLabel = d.transport === 'wifi' ? 'Wi-Fi' : 'USB';
         const badge =
           d.reality === 'physical'
             ? d.platform === 'android'
-              ? t('androidPhysical')
-              : t('iphonePhysical')
+              ? \`[Android \${transportLabel}]\`
+              : \`[iPhone \${transportLabel}]\`
             : d.platform === 'android'
             ? t('androidEmulator')
             : t('iosSimulator');
