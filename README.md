@@ -2,7 +2,7 @@
 
 Capture live screenshots from connected **Android & iOS physical devices** (as well as emulators and simulators) and control **Run & Debug (Target Device, Flavor, Offline Emulator Boot, Hot Reload)** directly inside a single compact **VS Code** & **Antigravity IDE** Left Sidebar — complete with built-in **Markup, Non-Destructive Eraser, Crop, Translucent HUD, and 1-Click Send to Active AI Prompt (Copilot Chat & Antigravity)**.
 
-![Device Screenshot Sidebar Preview](media/preview-sidebar.png)
+![Device Screenshot Sidebar Preview](media/preview-sidebar-v102.png)
 
 ---
 
