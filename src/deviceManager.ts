@@ -11,6 +11,7 @@ export type DeviceTransport = 'usb' | 'wifi' | 'simulator';
 export interface MobileDevice {
   id: string;
   udid?: string;
+  avdId?: string;
   name: string;
   model: string;
   platform: DevicePlatform;
@@ -19,12 +20,23 @@ export interface MobileDevice {
   transport?: DeviceTransport;
 }
 
+export interface OfflineEmulator {
+  id: string; // e.g. 'offline:ios:apple_ios_simulator' | 'offline:android:Pixel_10_Pro_XL' | 'offline:android-cold:Pixel_10_Pro_XL'
+  emulatorId: string;
+  name: string;
+  platform: DevicePlatform;
+  coldBoot?: boolean;
+}
+
 export class DeviceManager {
   private _cachedDevicesFingerprint = '';
   private _pollTimer?: NodeJS.Timeout;
   private _listenerCount = 0;
   private _isPolling = false;
   private _androidModelCache = new Map<string, string>();
+  private _androidAvdCache = new Map<string, string>();
+  private _bootPromises = new Map<string, Promise<MobileDevice | undefined>>();
+  private _hasXcodeSimulatorCache?: boolean;
   private _onDidChangeDevices = new vscode.EventEmitter<MobileDevice[]>();
   public readonly onDidChangeDevices: vscode.Event<MobileDevice[]> = this._onDidChangeDevices.event;
 
@@ -89,6 +101,283 @@ export class DeviceManager {
       ...process.env,
       PATH: [...extraPaths, currentPath].join(path.delimiter),
     };
+  }
+
+  private getEmulatorCommand(): string {
+    const exeName = process.platform === 'win32' ? 'emulator.exe' : 'emulator';
+    const config = vscode.workspace.getConfiguration('deviceScreenshot');
+    const customAdb = config.get<string>('adbPath', '').trim();
+    const fromCustomAdb = customAdb
+      ? path.resolve(path.dirname(customAdb), '..', 'emulator', exeName)
+      : '';
+
+    const home = os.homedir();
+    const candidates = [
+      fromCustomAdb,
+      process.env.ANDROID_HOME ? path.join(process.env.ANDROID_HOME, 'emulator', exeName) : '',
+      process.env.ANDROID_SDK_ROOT ? path.join(process.env.ANDROID_SDK_ROOT, 'emulator', exeName) : '',
+      path.join(home, 'Library', 'Android', 'sdk', 'emulator', exeName),
+      path.join(home, 'Android', 'Sdk', 'emulator', exeName),
+      process.env.LOCALAPPDATA
+        ? path.join(process.env.LOCALAPPDATA, 'Android', 'Sdk', 'emulator', exeName)
+        : '',
+    ].filter(Boolean);
+
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+    return exeName;
+  }
+
+  private readAndroidAvdDisplayName(avdDir: string, avdId: string): string {
+    try {
+      const cfgPath = path.join(avdDir, `${avdId}.avd`, 'config.ini');
+      if (fs.existsSync(cfgPath)) {
+        const content = fs.readFileSync(cfgPath, 'utf8');
+        const match = /^avd\.ini\.displayname\s*=\s*(.+)$/m.exec(content);
+        if (match && match[1].trim()) {
+          return match[1].trim();
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return avdId.replace(/_/g, ' ');
+  }
+
+  private async listInstalledAndroidAvds(): Promise<Array<{ id: string; name: string }>> {
+    const avdDir = path.join(os.homedir(), '.android', 'avd');
+    const results: Array<{ id: string; name: string }> = [];
+    try {
+      if (!fs.existsSync(avdDir)) {
+        return results;
+      }
+      const entries = await fs.promises.readdir(avdDir);
+      for (const entry of entries) {
+        if (!entry.endsWith('.ini')) {
+          continue;
+        }
+        const avdId = entry.slice(0, -4);
+        if (!avdId) {
+          continue;
+        }
+        results.push({
+          id: avdId,
+          name: this.readAndroidAvdDisplayName(avdDir, avdId),
+        });
+      }
+      results.sort((a, b) => a.name.localeCompare(b.name));
+    } catch {
+      // ignore
+    }
+    return results;
+  }
+
+  private hasXcodeSimulator(): boolean {
+    if (process.platform !== 'darwin') {
+      return false;
+    }
+    if (this._hasXcodeSimulatorCache !== undefined) {
+      return this._hasXcodeSimulatorCache;
+    }
+    this._hasXcodeSimulatorCache =
+      fs.existsSync('/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app') ||
+      fs.existsSync('/Library/Developer/CommandLineTools');
+    return this._hasXcodeSimulatorCache;
+  }
+
+  public async listOfflineEmulators(connectedDevices: MobileDevice[]): Promise<OfflineEmulator[]> {
+    const offline: OfflineEmulator[] = [];
+
+    // 1. iOS Simulator (macOS) - show 'Start iOS Simulator' when none is currently booted
+    if (process.platform === 'darwin' && this.hasXcodeSimulator()) {
+      const hasBootedIosSim = connectedDevices.some(
+        (d) => d.platform === 'ios' && d.reality === 'simulator'
+      );
+      if (!hasBootedIosSim) {
+        offline.push({
+          id: 'offline:ios:apple_ios_simulator',
+          emulatorId: 'apple_ios_simulator',
+          name: 'iOS Simulator',
+          platform: 'ios',
+          coldBoot: false,
+        });
+      }
+    }
+
+    // 2. Android Offline Emulators (AVDs not currently booted)
+    const bootedAvdIds = new Set(
+      connectedDevices
+        .filter((d) => d.platform === 'android' && d.reality === 'simulator' && d.avdId)
+        .map((d) => d.avdId as string)
+    );
+    const avds = await this.listInstalledAndroidAvds();
+    for (const avd of avds) {
+      if (bootedAvdIds.has(avd.id)) {
+        continue;
+      }
+      offline.push({
+        id: `offline:android:${avd.id}`,
+        emulatorId: avd.id,
+        name: avd.name,
+        platform: 'android',
+        coldBoot: false,
+      });
+      offline.push({
+        id: `offline:android-cold:${avd.id}`,
+        emulatorId: avd.id,
+        name: avd.name,
+        platform: 'android',
+        coldBoot: true,
+      });
+    }
+
+    return offline;
+  }
+
+  public async bootOfflineEmulator(specId: string, progressTitle?: string): Promise<MobileDevice | undefined> {
+    if (!specId.startsWith('offline:')) {
+      return undefined;
+    }
+    const parts = specId.split(':');
+    const kind = parts[1]; // 'ios' | 'android' | 'android-cold'
+    const emulatorId = parts.slice(2).join(':');
+    const dedupeKey = `${kind === 'android-cold' ? 'android' : kind}:${emulatorId}`;
+
+    const existing = this._bootPromises.get(dedupeKey);
+    if (existing) {
+      return existing;
+    }
+
+    const friendlyLabel =
+      kind === 'ios'
+        ? 'iOS Simulator'
+        : this.readAndroidAvdDisplayName(path.join(os.homedir(), '.android', 'avd'), emulatorId);
+
+    const task = vscode.window.withProgress<MobileDevice | undefined>(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: progressTitle || `Starting ${friendlyLabel}...`,
+        cancellable: true,
+      },
+      async (_progress, token) => {
+        if (kind === 'ios') {
+          try {
+            await this.execPromise('open', ['-a', 'Simulator'], 5000);
+          } catch {
+            // ignore
+          }
+
+          let fallbackBootAttempted = false;
+          for (let i = 0; i < 45; i++) {
+            if (token.isCancellationRequested) {
+              return undefined;
+            }
+            const sims = await this.listIosSimulators();
+            if (sims.length > 0) {
+              return sims[0];
+            }
+            // If Simulator.app opened without auto-booting any device after ~3.5s, boot best available iPhone
+            if (i === 4 && !fallbackBootAttempted) {
+              fallbackBootAttempted = true;
+              const bestUdid = await this.findPreferredIosSimulatorUdid();
+              if (bestUdid) {
+                await this.execPromise('xcrun', ['simctl', 'boot', bestUdid], 8000).catch(() => {});
+                await this.execPromise('open', ['-a', 'Simulator'], 5000).catch(() => {});
+              }
+            }
+            await new Promise((r) => setTimeout(r, 800));
+          }
+          return undefined;
+        }
+
+        // Android AVD boot
+        const emulatorBin = this.getEmulatorCommand();
+        const coldBoot = kind === 'android-cold';
+        const args = coldBoot ? ['-avd', emulatorId, '-no-snapshot-load'] : ['-avd', emulatorId];
+        try {
+          const child = cp.spawn(emulatorBin, args, {
+            detached: true,
+            stdio: 'ignore',
+            env: this.getEnvWithPaths(),
+          });
+          child.unref();
+        } catch {
+          return undefined;
+        }
+
+        const adb = this.getAdbCommand();
+        for (let i = 0; i < 90; i++) {
+          if (token.isCancellationRequested) {
+            return undefined;
+          }
+          await new Promise((r) => setTimeout(r, 1000));
+          const androidList = await this.listAndroidDevices();
+          const matched =
+            androidList.find((d) => d.avdId === emulatorId) ||
+            androidList.find((d) => d.reality === 'simulator');
+          if (matched) {
+            try {
+              const bootRes = await this.execPromise(
+                adb,
+                ['-s', matched.id, 'shell', 'getprop', 'sys.boot_completed'],
+                2500
+              );
+              if (bootRes.stdout.trim() === '1') {
+                return matched;
+              }
+            } catch {
+              // still booting
+            }
+          }
+        }
+        return undefined;
+      }
+    );
+
+    const wrapped = Promise.resolve(task).finally(() => {
+      this._bootPromises.delete(dedupeKey);
+    });
+    this._bootPromises.set(dedupeKey, wrapped);
+    return wrapped;
+  }
+
+  private async findPreferredIosSimulatorUdid(): Promise<string | undefined> {
+    try {
+      const { stdout } = await this.execPromise('xcrun', ['simctl', 'list', 'devices', 'available', '-j'], 5000);
+      const parsed = JSON.parse(stdout);
+      const devicesMap = parsed?.devices || {};
+      const candidates: Array<{ udid: string; name: string; lastUsedAt?: string }> = [];
+
+      for (const runtime of Object.keys(devicesMap)) {
+        if (!runtime.toLowerCase().includes('ios')) {
+          continue;
+        }
+        for (const sim of devicesMap[runtime] || []) {
+          if (sim?.isAvailable && sim?.udid) {
+            candidates.push({
+              udid: sim.udid,
+              name: String(sim.name || ''),
+              lastUsedAt: typeof sim.lastUsedAt === 'string' ? sim.lastUsedAt : undefined,
+            });
+          }
+        }
+      }
+
+      const withLastUsed = candidates
+        .filter((c) => c.lastUsedAt)
+        .sort((a, b) => String(b.lastUsedAt).localeCompare(String(a.lastUsedAt)));
+      if (withLastUsed.length > 0) {
+        return withLastUsed[0].udid;
+      }
+
+      const iphone = candidates.find((c) => c.name.toLowerCase().includes('iphone'));
+      return iphone?.udid || candidates[0]?.udid;
+    } catch {
+      return undefined;
+    }
   }
 
   private getAdbCommand(): string {
@@ -207,22 +496,50 @@ export class DeviceManager {
         const isWifi = /:\d+$/.test(serial) || (!isEmulator && !trimmed.includes('usb:'));
         const transport: DeviceTransport = isEmulator ? 'simulator' : isWifi ? 'wifi' : 'usb';
 
+        let avdId: string | undefined;
+        if (isEmulator) {
+          avdId = this._androidAvdCache.get(serial);
+          if (!avdId) {
+            try {
+              const avdRes = await this.execPromise(
+                adb,
+                ['-s', serial, 'shell', 'getprop', 'ro.boot.qemu.avd_name'],
+                2500
+              );
+              const parsedAvd = avdRes.stdout.trim();
+              if (parsedAvd) {
+                avdId = parsedAvd;
+                this._androidAvdCache.set(serial, parsedAvd);
+              }
+            } catch {
+              // ignore
+            }
+          }
+        }
+
         let model = this._androidModelCache.get(serial) || '';
         if (!model) {
-          for (const part of parts.slice(2)) {
-            if (part.startsWith('model:')) {
-              model = part.replace('model:', '').replace(/_/g, '-');
+          if (isEmulator && avdId) {
+            model = this.readAndroidAvdDisplayName(path.join(os.homedir(), '.android', 'avd'), avdId);
+          }
+          if (!model) {
+            for (const part of parts.slice(2)) {
+              if (part.startsWith('model:')) {
+                model = part.replace('model:', '').replace(/_/g, '-');
+              }
             }
           }
 
-          try {
-            const propRes = await this.execPromise(adb, ['-s', serial, 'shell', 'getprop', 'ro.product.model'], 2500);
-            const propModel = propRes.stdout.trim();
-            if (propModel) {
-              model = propModel;
+          if (!isEmulator) {
+            try {
+              const propRes = await this.execPromise(adb, ['-s', serial, 'shell', 'getprop', 'ro.product.model'], 2500);
+              const propModel = propRes.stdout.trim();
+              if (propModel) {
+                model = propModel;
+              }
+            } catch {
+              // Ignore getprop failure and keep parsed model
             }
-          } catch {
-            // Ignore getprop failure and keep parsed model
           }
 
           if (!model) {
@@ -233,6 +550,7 @@ export class DeviceManager {
 
         devices.push({
           id: serial,
+          avdId,
           name: model,
           model,
           platform: 'android',
@@ -247,6 +565,24 @@ export class DeviceManager {
     }
   }
 
+  private async getMacUsbSerials(): Promise<Set<string>> {
+    const serials = new Set<string>();
+    if (process.platform !== 'darwin') {
+      return serials;
+    }
+    try {
+      const { stdout } = await this.execPromise('ioreg', ['-p', 'IOUSB', '-w0', '-l'], 2500);
+      const regex = /"USB Serial Number"\s*=\s*"([^"]+)"/g;
+      let match: RegExpExecArray | null;
+      while ((match = regex.exec(stdout)) !== null) {
+        serials.add(match[1].replace(/-/g, '').toUpperCase());
+      }
+    } catch {
+      // ignore ioreg failure
+    }
+    return serials;
+  }
+
   private async listIosPhysicalDevices(): Promise<MobileDevice[]> {
     if (process.platform !== 'darwin') {
       return [];
@@ -254,11 +590,13 @@ export class DeviceManager {
 
     const devices: MobileDevice[] = [];
     const seenUdids = new Set<string>();
+    const usbSerials = await this.getMacUsbSerials();
 
     // 1. Try Xcode CoreDevice (xcrun devicectl) - supports iOS 17+ / Xcode 15+
     try {
       const { stdout } = await this.execPromise('xcrun', ['devicectl', 'list', 'devices', '-j', '-'], 6000);
-      const parsed = JSON.parse(stdout);
+      const jsonIdx = stdout.indexOf('{');
+      const parsed = JSON.parse(jsonIdx >= 0 ? stdout.slice(jsonIdx) : stdout);
       const rawDevices: any[] = parsed?.result?.devices || [];
 
       for (const d of rawDevices) {
@@ -267,17 +605,29 @@ export class DeviceManager {
           continue;
         }
 
+        const udid = d?.properties?.hardware?.udid || d?.hardwareProperties?.udid || d?.identifier;
+        const normalizedUdid = udid ? String(udid).replace(/-/g, '').toUpperCase() : '';
+        const isPhysicallyOnUsb = normalizedUdid.length > 0 && usbSerials.has(normalizedUdid);
+
         const connState = d?.properties?.connection?.state || d?.connectionProperties?.tunnelState;
         const pairingState = d?.properties?.connection?.pairingState || d?.connectionProperties?.pairingState;
-        // Skip devices that are explicitly unavailable/disconnected
-        if (connState === 'unavailable' || connState === 'disconnected') {
-          continue;
-        }
-        if (connState !== 'connected' && pairingState !== 'paired') {
+        const rawTransport = String(
+          d?.properties?.connection?.transportType ||
+          d?.connectionProperties?.transportType ||
+          ''
+        ).toLowerCase();
+
+        // In CoreDevice, 'unavailable' means unplugged & unreachable.
+        // 'disconnected' means the on-demand DDI tunnel is idle while the device itself is
+        // 'available (paired)' when transportType ('wired' / 'localNetwork') is present.
+        const isActivelyConnected = connState === 'connected' || connState === 'connecting';
+        const isAvailablePaired =
+          connState !== 'unavailable' && pairingState === 'paired' && rawTransport.length > 0;
+
+        if (!isActivelyConnected && !isAvailablePaired && !isPhysicallyOnUsb) {
           continue;
         }
 
-        const udid = d?.properties?.hardware?.udid || d?.hardwareProperties?.udid || d?.identifier;
         const identifier = d?.identifier || udid;
         const name = d?.properties?.state?.name || d?.deviceProperties?.name || 'iPhone';
         const marketingName =
@@ -294,17 +644,11 @@ export class DeviceManager {
           seenUdids.add(udid);
         }
 
-        const rawTransport = String(
-          d?.properties?.connection?.transportType ||
-          d?.connectionProperties?.transportType ||
-          ''
-        ).toLowerCase();
-
         let transport: DeviceTransport = 'usb';
-        if (rawTransport.includes('network') || rawTransport.includes('wifi') || rawTransport.includes('localnetwork')) {
-          transport = 'wifi';
-        } else if (rawTransport.includes('wired') || rawTransport.includes('usb')) {
+        if (isPhysicallyOnUsb || rawTransport.includes('wired') || rawTransport.includes('usb')) {
           transport = 'usb';
+        } else if (rawTransport.includes('network') || rawTransport.includes('wifi') || rawTransport.includes('localnetwork')) {
+          transport = 'wifi';
         }
 
         devices.push({

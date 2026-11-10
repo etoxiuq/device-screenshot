@@ -1,12 +1,16 @@
 import * as vscode from 'vscode';
 import { DeviceManager, MobileDevice } from './deviceManager';
 import { normalizeLanguage, TRANSLATIONS } from './i18n';
+import { LaunchManager } from './launchManager';
 import { ScreenshotPanel } from './screenshotPanel';
 import { ScreenshotSidebarProvider } from './sidebarProvider';
 
 export function activate(context: vscode.ExtensionContext) {
   const deviceManager = new DeviceManager();
-  const sidebarProvider = new ScreenshotSidebarProvider(context, deviceManager);
+  const launchManager = new LaunchManager(context);
+  context.subscriptions.push(launchManager);
+
+  const sidebarProvider = new ScreenshotSidebarProvider(context, deviceManager, launchManager);
 
   // Register Left Activity Bar Sidebar View
   context.subscriptions.push(

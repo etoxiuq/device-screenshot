@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { DeviceManager, MobileDevice } from './deviceManager';
 import { normalizeLanguage, SupportedLanguage, TRANSLATIONS } from './i18n';
+import { sendImageFileToActivePrompt } from './promptRouter';
 
 export class ScreenshotPanel {
   public static currentPanel: ScreenshotPanel | undefined;
@@ -351,17 +352,11 @@ export class ScreenshotPanel {
 
       await this.handleCopyToClipboard(dataUrl);
 
-      const allCommands = await vscode.commands.getCommands(true);
-      if (allCommands.includes('antigravity.addContext')) {
-        await vscode.commands.executeCommand('antigravity.addContext', {
-          type: 'file',
-          uri: vscode.Uri.file(filePath).toString(),
-        });
-        this._panel.webview.postMessage({
-          command: 'toast',
-          text: this.t('toastPromptAttached'),
-        });
-      }
+      const res = await sendImageFileToActivePrompt(this._context, filePath);
+      this._panel.webview.postMessage({
+        command: 'toast',
+        text: res.attached ? this.t('toastPromptAttached') : this.t('toastPromptFocused'),
+      });
     } catch (err: any) {
       vscode.window.showErrorMessage(`Failed to send to prompt: ${err?.message || err}`);
     }
@@ -518,6 +513,21 @@ export class ScreenshotPanel {
 
     .btn-icon-only {
       padding: 6px 8px;
+    }
+
+    #refreshDevicesBtn:not(:disabled),
+    #recaptureBtn:not(:disabled) {
+      color: #4ac26b;
+      background-color: rgba(46, 160, 67, 0.18);
+      border-color: rgba(46, 160, 67, 0.45);
+      font-weight: 600;
+    }
+
+    #refreshDevicesBtn:hover:not(:disabled),
+    #recaptureBtn:hover:not(:disabled) {
+      background-color: rgba(46, 160, 67, 0.32);
+      border-color: rgba(74, 194, 107, 0.7);
+      color: #6ee787;
     }
 
     .spacer {

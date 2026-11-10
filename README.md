@@ -1,6 +1,6 @@
 # Device Screenshot (Android & iOS)
 
-Capture live screenshots from connected **Android & iOS physical devices** (as well as emulators and simulators) directly inside the **VS Code** & **Antigravity IDE** Left Sidebar — complete with built-in **Markup, Eraser, Crop, Rotation, Copy to Clipboard, and 1-Click Send to AI Prompt**.
+Capture live screenshots from connected **Android & iOS physical devices** (as well as emulators and simulators) and control **Run & Debug (Target Device, Flavor, Offline Emulator Boot, Hot Reload)** directly inside a single compact **VS Code** & **Antigravity IDE** Left Sidebar — complete with built-in **Markup, Non-Destructive Eraser, Crop, Translucent HUD, and 1-Click Send to Active AI Prompt (Copilot Chat & Antigravity)**.
 
 ![Device Screenshot Sidebar Preview](media/preview-sidebar.png)
 
@@ -8,35 +8,33 @@ Capture live screenshots from connected **Android & iOS physical devices** (as w
 
 ## Key Features (English)
 
-### 1. Physical Device First (Android & iOS)
-- **Real-Time Hotplug Auto-Detection**: Automatically detects device connection and disconnection (USB cable plug/unplug) in 1~2 seconds without manual refresh.
-- **Visual USB vs Wi-Fi Badges**: Displays vibrant visual badges distinguishing wired `[USB]`, wireless network debugging `[Wi-Fi]`, and virtual `[Simulator]` / `[Emulator]`.
-- **Android Physical Devices & Emulators**: Automatically detects USB and wireless debugging devices via `adb` (`adb exec-out screencap -p`) and sorts physical devices to the top.
-- **iPhone / iPad Physical Devices**: Supports real iOS devices on macOS via Xcode `xcrun devicectl` (iOS 17+) and `idevicescreenshot` (`libimobiledevice`).
-- **iOS Simulators**: Supports booted Xcode iOS Simulators via `xcrun simctl`.
-- **Clean Unselected Initial State**: Opens in a clean standby view without taking unwanted captures until you click the device you want to capture.
+### 1. Compact Run & Debug Control Card (New in v1.0.2)
+- **All-in-One Single Sidebar Workflow**: Select your target device, pick a `.vscode/launch.json` flavor (`Dev`, `Staging`, `Prod`, etc.), and launch/debug without opening the Command Palette (`Select Device`) or switching away to the `Run and Debug` view (`suppressDebugView`).
+- **Offline Emulator & Simulator Auto-Boot**: Lists connected physical devices at the top (`Available Devices`) followed by unbooted Android AVDs (including Cold Boot) and `Start iOS Simulator` (`Offline Emulators`) — selecting an offline emulator and pressing **Run (`▶`)** boots it automatically and launches your app.
+- **Separated from Screenshot Selection**: Your Run & Debug target spinner stays independent from the `Connected Devices` screenshot list below, so capturing screenshots from multiple devices never interrupts your active debug target.
+- **Live Session Controls**: Automatically displays **Hot Reload (`⚡`)**, **Hot Restart (`↻`)**, and **Stop (`■`)** right next to the flavor selector while debugging Flutter/Dart or mobile sessions.
 
-### 2. Built-in macOS-Style Markup, Eraser & Crop
-![Markup & Custom Color Palette](media/preview-markup.png)
+### 2. Physical Device First & Real-Time Hotplug (Android & iOS)
+- **Real-Time Hotplug Auto-Detection**: Automatically detects USB/wireless device connection and disconnection within 1~2 seconds without manual refresh, paired with a high-visibility emerald green **`[↻ Refresh]`** button.
+- **Visual USB vs Wi-Fi Badges**: Displays color-coded badges distinguishing wired **`[USB]`**, wireless debugging **`[Wi-Fi]`**, and virtual **`[Simulator]`** / **`[Emulator]`**.
+- **Android Physical Devices & Emulators**: Detects USB and wireless debugging devices via `adb` (`adb exec-out screencap -p`) and sorts physical devices to the top.
+- **iPhone / iPad Physical Devices & Simulators**: Full support on macOS via Xcode `xcrun devicectl` (including idle paired CoreDevice USB tunnels verified via `ioreg`), `idevicescreenshot` (`libimobiledevice`), and `xcrun simctl`.
 
+### 3. Always-Visible Action Bar & Smart AI Prompt Routing
+- **Guaranteed Top Visibility**: The single-row action bar (**Recapture `R`**, **Copy `Cmd+C`**, **Save `Cmd+S`**, **Save As**, and **Send to Prompt**) sits **directly above the screenshot viewport**, ensuring controls are never covered by bottom IDE notification popups or clipped on compact window heights.
+- **Smart Active Prompt Routing (`Send to Prompt`)**: Automatically detects which AI chat panel is currently expanded/active — natively attaching the screenshot into **GitHub Copilot Chat** or **Antigravity Prompt** without unfolding collapsed panels.
+- **Expand to Editor Tab**: Click the **Expand** icon in the top header to inspect and annotate in a full-size editor tab.
+
+### 4. Built-in macOS-Style Markup, Eraser, Crop & Translucent HUD
 - **Drawing & Annotation Tools**:
   - **Pen & Highlighter**: Freehand drawing and semi-transparent highlighting.
-  - **Non-Destructive Eraser**: Positioned right next to the Pen tool with an expanded visual brush ring — erases only your drawn annotations (pen, highlighter, shapes, text) while keeping the underlying device screenshot 100% intact.
-  - **Shapes & Text**: Draw **Rectangles**, **Circles**, **Arrows**, or type **Text** directly over the screenshot.
-  - **Area Crop**: Drag to select any region and crop (`Apply Crop`) or cancel.
-  - **Undo (`Cmd+Z`) & Reset**: Step back through up to 30 edits or restore the original unedited capture with one click.
-- **Custom Color Picker & Visual Stroke Sizes**:
-  - **5 Preset Circular Swatches** (`Red`, `Yellow`, `Green`, `Blue`, `White`) + **3 Custom Rounded-Square Color Slots** with an interactive color picker & HEX input.
-  - **Visual Circle Thickness Selector**: Side-by-side visual circle indicators (`Thin`, `Medium`, `Thick`) that automatically expand into larger rings when the Eraser tool is selected.
+  - **Non-Destructive Eraser**: Erases only drawn annotations while keeping the underlying device screenshot 100% intact.
+  - **Shapes, Text & Area Crop**: Draw **Rectangles**, **Circles**, **Arrows**, type **Text**, or drag to **Crop** any region (`Undo Cmd+Z` up to 30 steps & 1-click `Reset`).
+- **Custom Color Picker & Visual Stroke Sizes**: 5 preset circular swatches + 3 saved custom color slots (color picker & `#HEX` input) + 3 visual thickness indicators.
+- **Translucent In-Screen Floating HUD**: Compact see-through bottom-right overlay inside the screenshot viewport for **Rotate Left/Right (`90°`)**, **Pixel Grid**, **Rounded Corners**, **Output Scale (`100%~25%`)**, and **Zoom (`-`, `Fit`, `1:1`, `+`)**, letting the underlying screenshot remain clearly visible behind the toolbar.
 
-### 3. Instant Workflow: Copy, Save & Send to AI Prompt
-- **Send to Prompt**: Saves the annotated/cropped screenshot and attaches it directly to your AI chat/prompt input (or copies it to your clipboard ready for `Cmd+V`).
-- **Recapture (`R`) / Copy Clipboard (`Cmd+C`) / Save (`Cmd+S`) / Save As**: Conveniently grouped right below the preview viewport.
-- **Expand to Editor Tab**: Click the compact Expand icon in the top header whenever you want to inspect and annotate in a full-size editor tab.
-- **Rotation & Scaling**: Rotate `90°` left/right, preview `Rounded` display corners, toggle the pixel grid, and scale output resolution (`100%`, `75%`, `50%`, `25%`).
-
-### 4. 12 Languages Supported
-Full UI localization (selectable via the header **Settings** button or IDE Settings `deviceScreenshot.language`, defaulting to English):
+### 5. 12 Languages Supported
+Full UI localization (selectable via the header **Settings (`⚙`)** button or IDE Settings `deviceScreenshot.language`, defaulting to English):
 - English (`en`), 한국어 (`ko`), 日本語 (`ja`), 中文 (`zh`), हिन्दी (`hi`), Português (`pt`), Français (`fr`), Español (`es`), Bahasa Melayu (`ms`), Tiếng Việt (`vi`), ไทย (`th`), Deutsch (`de`).
 
 ### Requirements
@@ -47,35 +45,28 @@ Full UI localization (selectable via the header **Settings** button or IDE Setti
 
 ## 주요 기능 및 안내 (한국어)
 
-**Device Screenshot (Android & iOS)** 는 VS Code 및 Antigravity IDE의 **왼쪽 사이드바(Activity Bar)** 에서 현재 연결된 **안드로이드 실기기/에뮬레이터**와 **아이폰(iOS) 실기기/시뮬레이터**의 화면을 즉시 캡처하고, 마크업·크롭·클립보드 복사·AI 프롬프트 전송까지 한 번에 처리할 수 있는 확장 프로그램입니다.
+**Device Screenshot (Android & iOS)** 는 VS Code 및 Antigravity IDE의 **왼쪽 사이드바(Activity Bar)** 하나만으로 **기기 선택 및 Flavor 실행/디버그(Run & Debug)** 부터 **안드로이드/아이폰 실기기·에뮬레이터 화면 캡처, 마크업·크롭, 클립보드 복사, 활성 AI 프롬프트(Copilot Chat / Antigravity) 즉시 첨부**까지 모두 해결할 수 있는 올인원 확장 프로그램입니다.
 
-![사이드바 캡처 및 다국어 UI](media/preview-sidebar.png)
+### 1. 심플 통합 Run & Debug 컨트롤 바 (v1.0.2 신규)
+- **사이드바 하나로 끝내는 기기 선택 & Flavor 실행**: 매번 커맨드 팔레트(`Select Device`)나 `Run and Debug` 탭을 오갈 필요 없이, 상단 스피너에서 타겟 기기와 `.vscode/launch.json`의 Flavor(`Dev`, `Staging`, `Prod` 등)를 골라 녹색 **`[▶]`** 버튼으로 즉시 실행할 수 있습니다 (실행 시 강제로 디버그 탭으로 화면이 넘어가지 않도록 자동 유지).
+- **오프라인 에뮬레이터 & iOS 시뮬레이터 자동 구동**: 실제 연결된 기기(`Available Devices`)를 최상단에 우선 표시하며, 아직 켜지지 않은 Android 에뮬레이터(Cold Boot 포함)와 iOS 시뮬레이터(`Offline Emulators`)도 선택하여 실행 시 자동으로 부팅 후 앱을 실행합니다.
+- **실행용 기기 vs 스크린샷 기기 분리**: 상단 실행 타겟 스피너와 하단 스크린샷용 `Connected Devices` 목록이 독립적으로 동작하여, 여러 기기의 스크린샷을 번갈아 찍어도 현재 디버그 타겟이 섞이지 않습니다.
+- **실시간 디버그 제어**: 실행 중에는 **핫 리로드(`⚡`)**, **핫 리스타트(`↻`)**, **중지(`■`)** 아이콘이 우측에 자동으로 나타납니다.
 
-### 1. 실기기 우선 감지 (Android & iOS Physical Devices)
-- **실시간 Hotplug 자동 감지**: USB 케이블 연결/분리 시 새로고침 버튼을 누르지 않아도 1~2초 내에 기기 목록이 자동으로 갱신됩니다.
-- **USB 유선 vs Wi-Fi 무선 구분 뱃지**: 기기가 케이블 유선으로 연결되었는지(`[USB]`), Wi-Fi 무선 디버깅으로 연결되었는지(`[Wi-Fi]`) 직관적인 컬러 뱃지와 서브 텍스트로 명확히 표시합니다.
-- **Android 실기기 및 에뮬레이터**: USB 및 무선 디버깅으로 연결된 기기를 `adb`로 자동 감지하며, 실기기를 목록 최상단에 우선 배치합니다.
-- **iPhone / iPad 실기기**: macOS Xcode의 `xcrun devicectl` (iOS 17+) 및 `libimobiledevice`(`idevicescreenshot`)를 통해 연결된 실기기를 즉시 캡처합니다.
-- **깔끔한 초기 대기 화면**: 사이드바를 열었을 때 임의로 캡처하지 않고, 원하는 기기를 클릭했을 때 즉시 캡처가 수행됩니다.
+### 2. 실기기 우선 감지 & 실시간 Hotplug (Android & iOS)
+- **실시간 Hotplug 자동 감지 & 녹색 새로고침 버튼**: USB 연결/분리 시 1~2초 내에 목록이 자동 갱신되며, 시인성 높은 녹색 **`[↻ Refresh]`** 버튼으로 언제든 즉시 재검색할 수 있습니다.
+- **USB 유선 vs Wi-Fi 무선 구분 뱃지**: 유선 **`[USB]`**, 무선 디버깅 **`[Wi-Fi]`**, 가상 기기 **`[Simulator]`** / **`[Emulator]`** 상태를 직관적인 컬러 뱃지로 구분합니다.
+- **iPhone / Android 실기기 완벽 지원**: `adb` 및 macOS Xcode `xcrun devicectl`(대기 상태 페어링 터널 및 `ioreg` USB 하드웨어 교차 검증 포함), `idevicescreenshot`, `xcrun simctl`을 모두 지원합니다.
 
-### 2. 내장 마크업(그리기) · 지우개 · 크롭 · 커스텀 컬러
-![마크업 및 커스텀 컬러 팔레트](media/preview-markup.png)
+### 3. 가려지지 않는 상단 액션 바 & 스마트 AI 프롬프트 전송
+- **항상 노출되는 1줄 액션 바**: **재캡처(`↻`, 단축키 `R`)**, **클립보드 복사(`Cmd+C`)**, **저장(`Cmd+S`)**, **다른 이름으로 저장**, **Send to Prompt** 버튼을 **스크린샷 뷰 바로 위**에 1줄로 배치하여, 창 높이가 작거나 IDE 하단에 시스템 로딩/알림 팝업이 떠도 버튼이 절대 가려지지 않습니다.
+- **스마트 활성 프롬프트 자동 라우팅 (`Send to Prompt`)**: 현재 화면에 펼쳐져 있는 AI 채팅창(**GitHub Copilot Chat** 또는 **Antigravity 프롬프트**)을 자동 감지하여, 접혀 있는 다른 패널을 강제로 펼치지 않고 현재 사용 중인 프롬프트로 이미지를 바로 첨부합니다.
 
-- **직관적인 드로잉 & 지우개 툴**:
-  - **펜슬 & 형광펜**: 자유 곡선 그리기 및 반투명 형광펜 강조
-  - **원본 보존 지우개(Eraser)**: 펜슬 바로 옆에 위치하며, **캡처된 원본 화면은 절대 지우지 않고** 그 위에 그린 펜슬, 도형, 화살표, 텍스트만 깔끔하게 지워줍니다.
-  - **도형 & 텍스트**: 사각형, 원, 화살표, 텍스트 입력 지원
-  - **영역 자르기(Crop)**: 원하는 영역만 드래그하여 크롭 적용 및 취소 가능
-  - **실행 취소(`Cmd+Z`) & 원본 복구(Reset)**: 최대 30단계 실행 취소 및 1클릭 원본 복원
-- **커스텀 컬러 피커 & 직관적인 굵기 선택기**:
-  - **5가지 기본 원형 컬러** + **최대 3개까지 자동 저장되는 사각형 커스텀 컬러 슬롯**(컬러 피커 및 `#HEX` 직접 입력 지원)
-  - 텍스트 대신 **실제 굵기 비율을 보여주는 3단계 원형 버튼** 제공 (지우개 선택 시 지우개 배율에 맞춰 원 크기가 자동으로 확대 표시됨)
-
-### 3. 빠른 액션 바 & AI 프롬프트 바로 전송
-- **프롬프트로 전달 (Send to Prompt)**: 마크업하거나 크롭한 이미지를 AI 프롬프트 입력창으로 즉시 전달(및 클립보드 자동 복사)합니다.
-- **하단 통합 액션 바**: 캡처 화면 바로 아래에서 **Recapture (`R`)**, **Copy Clipboard (`Cmd+C`)**, **Save (`Cmd+S`)**, **Save As (폴더+ 아이콘 버튼)** 를 한 번에 조작할 수 있습니다.
-- **큰 창으로 열기 (Expand)**: 상단 헤더의 설정 아이콘 옆 **Expand** 아이콘 버튼을 눌러 넓은 에디터 탭에서도 동일하게 작업할 수 있습니다.
-- **12개 국어 완벽 지원**: 기본 영어(`en`)를 비롯하여 한국어(`ko`), 일본어(`ja`), 중국어(`zh`), 힌디어(`hi`), 포르투갈어(`pt`), 프랑스어(`fr`), 스페인어(`es`), 말레이시아어(`ms`), 베트남어(`vi`), 태국어(`th`), 독일어(`de`)를 상단 톱니바퀴(설정)에서 즉시 전환할 수 있습니다.
+### 4. 내장 마크업 · 원본 보존 지우개 · 크롭 · 반투명 플로팅 HUD
+- **직관적인 드로잉 & 원본 보존 지우개**: 펜슬, 형광펜, 사각형, 원, 화살표, 텍스트, 영역 자르기(Crop), 실행 취소(`Cmd+Z` 30단계) 및 원본 복구(`Reset`)를 지원하며, 지우개는 캡처 원본을 훼손하지 않고 그린 주석만 지워줍니다.
+- **커스텀 컬러 & 굵기 선택**: 5가지 기본 컬러 + 최대 3개 자동 저장 커스텀 컬러(`#HEX` 지원) + 3단계 원형 굵기 선택기 제공.
+- **반투명 인스크린 플로팅 편집/줌 바**: 스크린샷 우측 하단에 회전(`90°`), 픽셀 그리드, 둥근 모서리, 해상도 배율(`100%~25%`), 확대/축소(`-`, `Fit`, `1:1`, `+`) 버튼을 **반투명 플로팅 바**로 집약해 세로 공간을 아끼면서도 뒤쪽 스크린샷 화면이 그대로 비쳐 보입니다.
+- **12개 국어 지원**: 상단 `⚙` 설정 버튼에서 영어(`en`), 한국어(`ko`), 일본어(`ja`), 중국어(`zh`) 등 12개 언어를 즉시 전환할 수 있습니다.
 
 ---
 

@@ -1,8 +1,8 @@
 {
   "name": "device-screenshot",
   "displayName": "Device Screenshot (Android & iOS)",
-  "description": "Capture screenshots from connected Android & iOS physical devices (and simulators) directly in the Left Sidebar with 1-click Recapture, Copy to Clipboard, Send to AI Prompt, Markup, Eraser, Crop, Rotation, and Save.",
-  "version": "1.0.1",
+  "description": "All-in-one Android & iOS sidebar for Live Device Screenshots, Run & Debug (Flavor & Offline Emulator launcher, Hot Reload), Markup/Crop, and 1-Click Send to Copilot Chat & Antigravity Prompt.",
+  "version": "1.0.2",
   "publisher": "etoxiuq",
   "icon": "media/icon.png",
   "repository": {
@@ -21,12 +21,15 @@
     "android",
     "ios",
     "iphone",
+    "flutter",
     "adb",
     "screenshot",
     "screencap",
     "device",
-    "capture",
+    "emulator",
+    "simulator",
     "markup",
+    "copilot",
     "antigravity"
   ],
   "activationEvents": [

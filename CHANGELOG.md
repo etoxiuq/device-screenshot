@@ -4,6 +4,26 @@ All notable changes to the **Device Screenshot (Android & iOS)** extension will 
 
 ---
 
+## [1.0.2] - 2026-11-10
+
+### Added
+- **Compact Run & Debug Card (Independent Target Spinner + Flavor Spinner)**:
+  - Positioned at the top of the sidebar above `Connected Devices`, separating **Run & Debug target selection** from **Screenshot device selection**.
+  - **Offline Emulator & Simulator Auto-Boot**: Lists connected physical devices first (`Available Devices`) followed by offline Android AVDs (normal & cold boot) and `Start iOS Simulator` (`Offline Emulators`), automatically booting selected offline emulators when launching.
+  - **Flavor Spinner & Live Session Controls**: Reads `.vscode/launch.json` configurations/flavors and launches with `suppressDebugView: true` (keeping focus in your current sidebar instead of jumping to the Run and Debug tab), with live **Hot Reload (`⚡`)**, **Hot Restart (`↻`)**, and **Stop (`■`)** buttons + Dart Tooling Daemon (`Editor.selectDevice`) synchronization.
+- **Space-Efficient & Occlusion-Free Sidebar UI**:
+  - Moved the single-row action bar (**Recapture `R`**, **Copy `Cmd+C`**, **Save `Cmd+S`**, **Save As**, **Send to Prompt**) **directly above the screenshot viewport** so buttons remain 100% visible even on short windows or when bottom IDE notification toasts appear.
+  - Consolidated transform, resolution scale, and zoom controls into a **translucent bottom-right in-screen floating HUD** so the underlying screenshot remains visible behind the toolbar.
+  - Applied high-visibility emerald green accent styling to `[↻ Refresh]` and `[↻ Recapture]` buttons, with `[↻ Recapture]` enabled immediately upon device selection.
+
+### Fixed
+- **Smart Active AI Prompt Routing (`Send to Prompt`)**:
+  - Detects which AI chat panel is currently expanded/active (**GitHub Copilot Chat** vs **Antigravity**) and attaches screenshots directly to the active prompt (`workbench.action.chat.open` `attachFiles` for Copilot Chat) without unfolding collapsed Antigravity panels.
+- **iOS Physical Device Detection**:
+  - Fixed iPhone/iPad physical devices not appearing when Xcode `xcrun devicectl` reports `available (paired)` (idle on-demand CoreDevice tunnel with `state: "disconnected"` and `transportType: "wired"` / `"localNetwork"`), and added `ioreg` hardware USB serial cross-checking.
+
+---
+
 ## [1.0.1] - 2026-11-04
 
 ### Added

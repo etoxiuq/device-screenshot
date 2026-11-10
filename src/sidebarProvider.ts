@@ -3,20 +3,28 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { DeviceManager, MobileDevice } from './deviceManager';
+import { DeviceManager, MobileDevice, OfflineEmulator } from './deviceManager';
 import { LANGUAGE_OPTIONS, normalizeLanguage, SupportedLanguage, TRANSLATIONS } from './i18n';
+import { LaunchManager } from './launchManager';
+import { sendImageFileToActivePrompt } from './promptRouter';
 import { ScreenshotPanel } from './screenshotPanel';
+
+const RUN_DEVICE_STATE_KEY = 'deviceScreenshot.selectedRunDeviceId';
 
 export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'deviceScreenshot.sidebarView';
 
   private _view?: vscode.WebviewView;
   private _devices: MobileDevice[] = [];
+  private _offlineEmulators: OfflineEmulator[] = [];
   private _selectedDevice?: MobileDevice;
+  private _runDeviceId?: string;
+  private _extraRunTarget?: { id: string; label: string };
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
-    private readonly _deviceManager: DeviceManager
+    private readonly _deviceManager: DeviceManager,
+    private readonly _launchManager: LaunchManager
   ) {
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('deviceScreenshot')) {
@@ -35,6 +43,75 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
     return TRANSLATIONS[lang][key] || TRANSLATIONS.en[key] || key;
   }
 
+  private async resolveRunDeviceSelection(): Promise<void> {
+    this._offlineEmulators = await this._deviceManager.listOfflineEmulators(this._devices);
+
+    if (this._runDeviceId) {
+      // If an offline emulator that was selected just booted, automatically switch to the live booted device!
+      if (this._runDeviceId.startsWith('offline:ios:')) {
+        const bootedSim = this._devices.find((d) => d.platform === 'ios' && d.reality === 'simulator');
+        if (bootedSim) {
+          this._runDeviceId = bootedSim.id;
+          await this._context.workspaceState.update(RUN_DEVICE_STATE_KEY, this._runDeviceId);
+          void this._launchManager.syncIdeSelectedDeviceById(this._runDeviceId);
+          return;
+        }
+      } else if (this._runDeviceId.startsWith('offline:android')) {
+        const targetAvd = this._runDeviceId.split(':').slice(2).join(':');
+        const bootedEmu = this._devices.find((d) => d.avdId === targetAvd);
+        if (bootedEmu) {
+          this._runDeviceId = bootedEmu.id;
+          await this._context.workspaceState.update(RUN_DEVICE_STATE_KEY, this._runDeviceId);
+          void this._launchManager.syncIdeSelectedDeviceById(this._runDeviceId);
+          return;
+        }
+      }
+
+      const stillConnected = this._devices.find((d) => d.id === this._runDeviceId);
+      const stillOffline = this._offlineEmulators.find((o) => o.id === this._runDeviceId);
+      if (stillConnected || stillOffline || this._extraRunTarget?.id === this._runDeviceId) {
+        return;
+      }
+    }
+
+    // Priority 1: Connected devices (Physical devices first, then booted simulators)
+    const savedId = this._context.workspaceState.get<string>(RUN_DEVICE_STATE_KEY);
+    if (savedId) {
+      const savedConnected = this._devices.find((d) => d.id === savedId);
+      if (savedConnected) {
+        this._runDeviceId = savedConnected.id;
+        void this._launchManager.syncIdeSelectedDeviceById(this._runDeviceId);
+        return;
+      }
+    }
+
+    const ideDevId = await this._launchManager.getIdeSelectedDeviceId();
+    if (ideDevId) {
+      const ideFound = this._devices.find((d) => d.id.toLowerCase() === ideDevId.toLowerCase());
+      if (ideFound) {
+        this._runDeviceId = ideFound.id;
+        return;
+      }
+    }
+
+    if (this._devices.length > 0) {
+      this._runDeviceId = this._devices[0].id;
+      void this._launchManager.syncIdeSelectedDeviceById(this._runDeviceId);
+      return;
+    }
+
+    // Priority 2: When no devices are currently connected, select saved or first offline emulator
+    if (savedId) {
+      const savedOffline = this._offlineEmulators.find((o) => o.id === savedId);
+      if (savedOffline) {
+        this._runDeviceId = savedOffline.id;
+        return;
+      }
+    }
+
+    this._runDeviceId = this._offlineEmulators[0]?.id;
+  }
+
   public sendSettingsToWebview() {
     const config = vscode.workspace.getConfiguration('deviceScreenshot');
     this._view?.webview.postMessage({
@@ -43,6 +120,16 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
       saveDir: this.getSaveDirectory(),
       adbPath: config.get<string>('adbPath', ''),
       showStatusBar: config.get<boolean>('showStatusBarButton', true),
+    });
+  }
+
+  public sendLaunchStateToWebview() {
+    this._view?.webview.postMessage({
+      command: 'launchStateUpdated',
+      state: this._launchManager.getState(),
+      offlineEmulators: this._offlineEmulators,
+      runDeviceId: this._runDeviceId || null,
+      extraRunTarget: this._extraRunTarget || null,
     });
   }
 
@@ -67,39 +154,56 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
 
     const watchDisposable = this._deviceManager.startWatching(1500);
 
-    const changeSub = this._deviceManager.onDidChangeDevices((devices) => {
+    const changeSub = this._deviceManager.onDidChangeDevices(async (devices) => {
       this._devices = devices;
+      // Screenshot selection remains strictly what the user clicked (or undefined if unplugged)
       if (this._selectedDevice) {
-        const found = this._devices.find((d) => d.id === this._selectedDevice!.id);
-        this._selectedDevice = found || this._devices[0] || undefined;
-      } else if (this._devices.length > 0) {
-        this._selectedDevice = this._devices[0];
+        this._selectedDevice = this._devices.find((d) => d.id === this._selectedDevice!.id);
       }
+
+      // Run target selection updates independently for the Run spinner
+      await this.resolveRunDeviceSelection();
 
       this._view?.webview.postMessage({
         command: 'devicesUpdated',
         devices: this._devices,
+        offlineEmulators: this._offlineEmulators,
         selectedDeviceId: this._selectedDevice?.id || null,
+        runDeviceId: this._runDeviceId || null,
+        extraRunTarget: this._extraRunTarget || null,
+      });
+    });
+
+    const launchSub = this._launchManager.onDidChangeState((state) => {
+      this._view?.webview.postMessage({
+        command: 'launchStateUpdated',
+        state,
+        offlineEmulators: this._offlineEmulators,
+        runDeviceId: this._runDeviceId || null,
+        extraRunTarget: this._extraRunTarget || null,
       });
     });
 
     webviewView.onDidDispose(() => {
       watchDisposable.dispose();
       changeSub.dispose();
+      launchSub.dispose();
     });
 
     webviewView.webview.onDidReceiveMessage(async (msg) => {
       switch (msg.command) {
         case 'ready':
           this.sendSettingsToWebview();
+          this.sendLaunchStateToWebview();
           await this.refreshDevices(false);
           break;
 
         case 'refreshDevices':
-          await this.refreshDevices(false);
+          await this.refreshDevices(true);
           break;
 
         case 'selectDevice': {
+          // Strictly for Screenshot capture only!
           const found = this._devices.find((d) => d.id === msg.deviceId);
           if (found) {
             this._selectedDevice = found;
@@ -107,6 +211,128 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
           }
           break;
         }
+
+        case 'selectRunDevice': {
+          // Strictly for Run & Debug target spinner only!
+          if (typeof msg.deviceId === 'string' && msg.deviceId) {
+            this._runDeviceId = msg.deviceId;
+            if (this._extraRunTarget && this._extraRunTarget.id !== msg.deviceId) {
+              this._extraRunTarget = undefined;
+            }
+            await this._context.workspaceState.update(RUN_DEVICE_STATE_KEY, msg.deviceId);
+            if (!msg.deviceId.startsWith('offline:')) {
+              void this._launchManager.syncIdeSelectedDeviceById(msg.deviceId);
+            }
+          }
+          break;
+        }
+
+        case 'selectIdeDevice': {
+          const pickedId = await this._launchManager.openIdeDevicePicker();
+          this._devices = await this._deviceManager.listDevices();
+          if (this._selectedDevice) {
+            this._selectedDevice = this._devices.find((d) => d.id === this._selectedDevice!.id);
+          }
+          this._offlineEmulators = await this._deviceManager.listOfflineEmulators(this._devices);
+          if (pickedId) {
+            const matched = this._devices.find((d) => d.id.toLowerCase() === pickedId.toLowerCase());
+            if (matched) {
+              this._runDeviceId = matched.id;
+              this._extraRunTarget = undefined;
+            } else {
+              this._runDeviceId = pickedId;
+              this._extraRunTarget = { id: pickedId, label: pickedId };
+            }
+            await this._context.workspaceState.update(RUN_DEVICE_STATE_KEY, this._runDeviceId);
+          } else {
+            await this.resolveRunDeviceSelection();
+          }
+          this._view?.webview.postMessage({
+            command: 'devicesUpdated',
+            devices: this._devices,
+            offlineEmulators: this._offlineEmulators,
+            selectedDeviceId: this._selectedDevice?.id || null,
+            runDeviceId: this._runDeviceId || null,
+            extraRunTarget: this._extraRunTarget || null,
+            launchState: this._launchManager.getState(),
+          });
+          break;
+        }
+
+        case 'selectLaunchConfig': {
+          if (typeof msg.key === 'string') {
+            await this._launchManager.setSelectedKey(msg.key);
+          }
+          break;
+        }
+
+        case 'runLaunch': {
+          let requestedRunId =
+            typeof msg.runDeviceId === 'string' && msg.runDeviceId && msg.runDeviceId !== '__none__'
+              ? msg.runDeviceId
+              : this._runDeviceId;
+
+          // If an offline emulator/simulator is selected, boot it first and then launch!
+          if (requestedRunId && requestedRunId.startsWith('offline:')) {
+            const offlineItem = this._offlineEmulators.find((o) => o.id === requestedRunId);
+            const label = offlineItem
+              ? `${offlineItem.name}${offlineItem.coldBoot ? ' (cold boot)' : ''}`
+              : '';
+            const booted = await this._deviceManager.bootOfflineEmulator(
+              requestedRunId,
+              `${this.t('bootingEmulator')} ${label}`
+            );
+            if (!booted) {
+              return;
+            }
+            this._devices = await this._deviceManager.listDevices();
+            this._offlineEmulators = await this._deviceManager.listOfflineEmulators(this._devices);
+            requestedRunId = booted.id;
+            this._runDeviceId = booted.id;
+            await this._context.workspaceState.update(RUN_DEVICE_STATE_KEY, this._runDeviceId);
+            this._view?.webview.postMessage({
+              command: 'devicesUpdated',
+              devices: this._devices,
+              offlineEmulators: this._offlineEmulators,
+              selectedDeviceId: this._selectedDevice?.id || null,
+              runDeviceId: this._runDeviceId,
+              extraRunTarget: this._extraRunTarget || null,
+            });
+          }
+
+          const res = await this._launchManager.startLaunch({
+            selectedKey: typeof msg.key === 'string' ? msg.key : undefined,
+            targetDeviceId: requestedRunId,
+            availableDevices: this._devices,
+            noDebug: !!msg.noDebug,
+            pickDevicePlaceholder: this.t('selectRunDeviceTitle'),
+          });
+          if (res.chosenDeviceId && res.chosenDeviceId !== this._runDeviceId) {
+            this._runDeviceId = res.chosenDeviceId;
+            await this._context.workspaceState.update(RUN_DEVICE_STATE_KEY, this._runDeviceId);
+            this._view?.webview.postMessage({
+              command: 'devicesUpdated',
+              devices: this._devices,
+              offlineEmulators: this._offlineEmulators,
+              selectedDeviceId: this._selectedDevice?.id || null,
+              runDeviceId: this._runDeviceId || null,
+              extraRunTarget: this._extraRunTarget || null,
+            });
+          }
+          break;
+        }
+
+        case 'hotReload':
+          await this._launchManager.hotReload();
+          break;
+
+        case 'hotRestart':
+          await this._launchManager.hotRestart();
+          break;
+
+        case 'stopDebug':
+          await this._launchManager.stopDebug(this._runDeviceId);
+          break;
 
         case 'recapture':
           await this.captureSelectedDevice();
@@ -182,23 +408,27 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
     return this._context.globalState.get<string[]>('customMarkupColors', []);
   }
 
-  public async refreshDevices(keepSelection = false) {
+  public async refreshDevices(_keepSelection = true) {
     this._view?.webview.postMessage({ command: 'scanningDevices' });
     this._devices = await this._deviceManager.listDevices();
 
-    if (keepSelection && this._selectedDevice) {
+    // Screenshot selection stays strictly what the user clicked in Connected Devices
+    if (this._selectedDevice) {
       this._selectedDevice = this._devices.find((d) => d.id === this._selectedDevice!.id);
-    } else if (!keepSelection) {
-      if (this._selectedDevice) {
-        this._selectedDevice = this._devices.find((d) => d.id === this._selectedDevice!.id);
-      }
     }
+
+    // Run target selection is independent and backs the Run Device Spinner
+    await this.resolveRunDeviceSelection();
 
     const config = vscode.workspace.getConfiguration('deviceScreenshot');
     this._view?.webview.postMessage({
       command: 'devicesUpdated',
       devices: this._devices,
+      offlineEmulators: this._offlineEmulators,
       selectedDeviceId: this._selectedDevice?.id || null,
+      runDeviceId: this._runDeviceId || null,
+      extraRunTarget: this._extraRunTarget || null,
+      launchState: this._launchManager.getState(),
       saveDir: this.getSaveDirectory(),
       customColors: this.getCustomColors(),
       language: this.getLanguage(),
@@ -343,45 +573,11 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
   private async sendDataUrlToPrompt(dataUrl: string) {
     try {
       const filePath = await this.copyDataUrlToClipboard(dataUrl, false);
-      const fileUri = vscode.Uri.file(filePath);
-
-      const allCommands = await vscode.commands.getCommands(true);
-      let attachedToPrompt = false;
-
-      if (allCommands.includes('antigravity.addContext')) {
-        try {
-          await vscode.commands.executeCommand('antigravity.addContext', {
-            type: 'file',
-            uri: fileUri.toString(),
-          });
-          attachedToPrompt = true;
-        } catch {
-          // fallback below
-        }
-      }
-
-      if (!attachedToPrompt) {
-        const focusCommands = [
-          'antigravity.panel.focus',
-          'antigravity.toggleChatFocus',
-          'workbench.action.chat.focusInput',
-          'workbench.panel.chat.view.copilot.focus',
-        ];
-        for (const cmd of focusCommands) {
-          if (allCommands.includes(cmd)) {
-            try {
-              await vscode.commands.executeCommand(cmd);
-              break;
-            } catch {
-              // ignore
-            }
-          }
-        }
-      }
+      const res = await sendImageFileToActivePrompt(this._context, filePath);
 
       this._view?.webview.postMessage({
         command: 'toast',
-        text: attachedToPrompt ? this.t('toastPromptAttached') : this.t('toastPromptFocused'),
+        text: res.attached ? this.t('toastPromptAttached') : this.t('toastPromptFocused'),
       });
     } catch (err: any) {
       vscode.window.showErrorMessage(`Failed to send to prompt: ${err?.message || err}`);
@@ -521,6 +717,23 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
     .icon-btn:disabled, .btn:disabled {
       opacity: 0.35;
       cursor: not-allowed;
+    }
+
+    #refreshBtn {
+      color: #4ac26b;
+      background: rgba(46, 160, 67, 0.18);
+      border: 1px solid rgba(46, 160, 67, 0.44);
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 5px;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    #refreshBtn:hover:not(:disabled) {
+      background: rgba(46, 160, 67, 0.32);
+      border-color: rgba(74, 194, 107, 0.7);
+      color: #6ee787;
     }
 
     /* Device List */
@@ -1009,7 +1222,7 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
     .viewport {
       flex: 1;
       background: #121315;
-      margin: 6px 8px;
+      margin: 4px 8px 8px 8px;
       border-radius: 6px;
       border: 1px solid var(--border);
       position: relative;
@@ -1017,7 +1230,7 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
       display: flex;
       align-items: center;
       justify-content: center;
-      min-height: 180px;
+      min-height: 60px;
     }
 
     .viewport.mode-pan { cursor: grab; }
@@ -1133,8 +1346,12 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
       position: absolute;
       top: 6px;
       right: 8px;
-      background: rgba(20, 21, 23, 0.78);
-      color: var(--text-muted);
+      background: rgba(16, 18, 22, 0.36);
+      backdrop-filter: blur(1.5px);
+      -webkit-backdrop-filter: blur(1.5px);
+      color: #eef0f4;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.16);
       padding: 2px 7px;
       border-radius: 4px;
       font-size: 10.5px;
@@ -1150,17 +1367,90 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
     .zoom-overlay {
       position: absolute;
       bottom: 6px;
-      right: 8px;
+      right: 6px;
+      max-width: calc(100% - 12px);
       display: none;
+      align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
       gap: 2px;
-      background: rgba(30, 31, 34, 0.85);
-      padding: 2px;
-      border-radius: 5px;
-      border: 1px solid var(--border);
+      background: rgba(16, 18, 22, 0.34);
+      backdrop-filter: blur(1.5px);
+      -webkit-backdrop-filter: blur(1.5px);
+      padding: 2px 4px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+      transition: background 0.15s ease, border-color 0.15s ease;
+      z-index: 20;
+    }
+
+    .zoom-overlay:hover {
+      background: rgba(16, 18, 22, 0.56);
+      border-color: rgba(255, 255, 255, 0.3);
     }
 
     .zoom-overlay.visible {
       display: flex;
+    }
+
+    .hud-btn {
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border-radius: 4px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: #f4f6fa;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.88);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 10px;
+      font-weight: 600;
+      transition: all 0.12s ease;
+    }
+
+    .hud-btn svg {
+      filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.85));
+    }
+
+    .hud-btn:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.18);
+      color: #ffffff;
+    }
+
+    .hud-btn.active {
+      background: rgba(53, 116, 240, 0.48);
+      border-color: var(--accent);
+      color: #ffffff;
+    }
+
+    .hud-select {
+      height: 20px;
+      background: rgba(16, 18, 22, 0.28);
+      color: #f4f6fa;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.88);
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      border-radius: 4px;
+      padding: 0 3px;
+      font-size: 10.5px;
+      font-weight: 600;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .hud-select option {
+      background: #1e1f22;
+      color: #dfe1e5;
+    }
+
+    .hud-sep {
+      width: 1px;
+      height: 13px;
+      background: rgba(255, 255, 255, 0.28);
+      margin: 0 2px;
     }
 
     .loading-overlay {
@@ -1217,53 +1507,60 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
       transform: translateX(-50%) translateY(0);
     }
 
-    /* Footer Action & Save Controls */
-    .footer {
-      padding: 6px 10px 10px 10px;
-      border-top: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      flex-shrink: 0;
-    }
-
-    .bottom-actions-top {
+    /* Above-Viewport Single-Row Action Controls */
+    .capture-action-bar {
+      margin: 0 8px 2px 8px;
       display: flex;
       align-items: center;
       gap: 5px;
+      flex-shrink: 0;
     }
 
-    .bottom-actions-top .btn {
-      flex: 1;
-      padding: 6px 6px;
-      font-size: 11.5px;
-      white-space: nowrap;
-    }
-
-    .btn-icon-square {
-      width: 30px;
-      height: 29px;
+    .btn-icon-action {
+      width: 28px;
+      height: 28px;
       padding: 0;
-      flex: 0 0 30px !important;
+      flex: 0 0 28px;
       border-radius: 6px;
     }
 
-    .save-dir-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      font-size: 11px;
-      color: var(--text-muted);
-      gap: 6px;
-      padding-top: 1px;
+    #recaptureBtn {
+      width: 30px;
+      flex: 0 0 30px;
     }
 
-    .save-dir-path {
+    #recaptureBtn:not(:disabled) {
+      color: #4ac26b;
+      background: rgba(46, 160, 67, 0.18);
+      border-color: rgba(46, 160, 67, 0.45);
+    }
+
+    #recaptureBtn:hover:not(:disabled) {
+      background: rgba(46, 160, 67, 0.32);
+      border-color: rgba(74, 194, 107, 0.7);
+      color: #6ee787;
+    }
+
+    .btn-prompt-inline {
+      flex: 1;
+      min-width: 0;
+      height: 28px;
+      background: #3574f0;
+      border: 1px solid #4682fa;
+      color: #ffffff;
+      padding: 0 10px;
+      font-size: 12px;
+      white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      white-space: nowrap;
-      flex: 1;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .btn-prompt-inline:hover:not(:disabled) {
+      background: #4682fa;
+    }
+
+    .hidden-save-meta {
+      display: none;
     }
 
     .link-btn {
@@ -1365,20 +1662,165 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
       padding-top: 6px;
       border-top: 1px solid var(--border);
     }
+
+    /* Compact Top Run & Debug Card (Separated from Screenshot Device List) */
+    .run-card {
+      margin: 5px 8px 6px 8px;
+      padding: 5px 6px;
+      background: #25262a;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex-shrink: 0;
+      transition: border-color 0.15s ease;
+    }
+
+    .run-card.running {
+      border-color: rgba(74, 194, 107, 0.5);
+    }
+
+    .run-row {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      height: 24px;
+    }
+
+    .run-device-prefix {
+      color: var(--text-muted);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      flex-shrink: 0;
+    }
+
+    .run-card.running .run-device-prefix {
+      color: #4ac26b;
+    }
+
+    .run-flavor-icon {
+      display: block;
+    }
+
+    .run-status-dot {
+      display: none;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #4ac26b;
+      box-shadow: 0 0 6px rgba(74, 194, 107, 0.85);
+      flex-shrink: 0;
+    }
+
+    .run-card.running .run-flavor-icon {
+      display: none;
+    }
+
+    .run-card.running .run-status-dot {
+      display: inline-block;
+    }
+
+    .run-select {
+      flex: 1;
+      min-width: 0;
+      height: 24px;
+      background: #1b1c1f;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 0 6px;
+      font-size: 11.5px;
+      font-weight: 500;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .run-select:focus {
+      border-color: var(--accent);
+    }
+
+    .run-icon-btn {
+      width: 25px;
+      height: 24px;
+      padding: 0;
+      border-radius: 5px;
+      border: 1px solid transparent;
+      background: transparent;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: all 0.12s ease;
+    }
+
+    .run-icon-btn.play {
+      color: #4ac26b;
+      background: rgba(46, 160, 67, 0.16);
+      border-color: rgba(46, 160, 67, 0.36);
+    }
+
+    .run-icon-btn.play:hover {
+      background: rgba(46, 160, 67, 0.28);
+      color: #6ee787;
+    }
+
+    .run-card.running #runDebugBtn {
+      display: none;
+    }
+
+    .run-card.running.can-launch-another #runDebugBtn {
+      display: inline-flex;
+    }
+
+    .debug-active-group {
+      display: none;
+      align-items: center;
+      gap: 2px;
+      flex-shrink: 0;
+    }
+
+    .run-card.running .debug-active-group {
+      display: inline-flex;
+    }
+
+    .run-icon-btn.reload {
+      color: #f2b94b;
+    }
+
+    .run-icon-btn.reload:hover {
+      background: rgba(242, 185, 75, 0.18);
+      border-color: rgba(242, 185, 75, 0.36);
+    }
+
+    .run-icon-btn.restart {
+      color: #58a6ff;
+    }
+
+    .run-icon-btn.restart:hover {
+      background: rgba(88, 166, 255, 0.18);
+      border-color: rgba(88, 166, 255, 0.36);
+    }
+
+    .run-icon-btn.stop {
+      color: #f85149;
+      background: rgba(248, 81, 73, 0.12);
+      border-color: rgba(248, 81, 73, 0.28);
+    }
+
+    .run-icon-btn.stop:hover {
+      background: rgba(248, 81, 73, 0.24);
+    }
   </style>
 </head>
 <body>
-  <!-- 1. Connected Devices Header & List -->
-  <div class="section-header">
-    <span id="lblConnectedDevices">Connected Devices</span>
+  <!-- 0. Top Run & Debug Section (Independent Target Device Spinner + Flavor Spinner) -->
+  <div class="section-header" style="padding: 5px 10px 3px 12px;">
+    <span id="lblRunAndDebug">Run & Debug</span>
     <div class="header-actions">
-      <button id="refreshBtn" class="icon-btn" title="Refresh Devices">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/>
-          <path d="M13.5 2v2.5H11"/>
-        </svg>
-        <span id="lblRefresh">Refresh</span>
-      </button>
       <button id="openTabBtn" class="icon-btn" disabled title="Expand">
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M9.5 2.5h4v4"/>
@@ -1391,6 +1833,69 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
           <circle cx="8" cy="8" r="2.2"/>
           <path d="M13.4 9.3a1.2 1.2 0 0 0 .2 1.3l.1.1a1.4 1.4 0 1 1-2 2l-.1-.1a1.2 1.2 0 0 0-1.3-.2 1.2 1.2 0 0 0-.7 1.1v.2a1.4 1.4 0 1 1-2.8 0v-.1a1.2 1.2 0 0 0-.8-1.1 1.2 1.2 0 0 0-1.3.2l-.1.1a1.4 1.4 0 1 1-2-2l.1-.1a1.2 1.2 0 0 0 .2-1.3 1.2 1.2 0 0 0-1.1-.7h-.2a1.4 1.4 0 1 1 0-2.8h.1a1.2 1.2 0 0 0 1.1-.8 1.2 1.2 0 0 0-.2-1.3l-.1-.1a1.4 1.4 0 1 1 2-2l.1.1a1.2 1.2 0 0 0 1.3.2h.1a1.2 1.2 0 0 0 .7-1.1v-.2a1.4 1.4 0 1 1 2.8 0v.1a1.2 1.2 0 0 0 .7 1.1 1.2 1.2 0 0 0 1.3-.2l.1-.1a1.4 1.4 0 1 1 2 2l-.1.1a1.2 1.2 0 0 0-.2 1.3v.1a1.2 1.2 0 0 0 1.1.7h.2a1.4 1.4 0 1 1 0 2.8h-.1a1.2 1.2 0 0 0-1.1.7z"/>
         </svg>
+      </button>
+    </div>
+  </div>
+  <div id="runBar" class="run-card">
+    <div class="run-row">
+      <span class="run-device-prefix">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="4" y="1.5" width="8" height="13" rx="1.6"/>
+          <line x1="6.8" y1="12.3" x2="9.2" y2="12.3"/>
+        </svg>
+      </span>
+      <select id="runDeviceSelect" class="run-select" title="Target Device for Run & Debug">
+        <option value="__none__">No Target Device</option>
+      </select>
+    </div>
+    <div class="run-row">
+      <span class="run-device-prefix">
+        <svg class="run-flavor-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="8 1.8 14 5.2 8 8.6 2 5.2 8 1.8"/>
+          <polyline points="2 8.2 8 11.6 14 8.2"/>
+          <polyline points="2 11.1 8 14.5 14 11.1"/>
+        </svg>
+        <span id="runStatusDot" class="run-status-dot"></span>
+      </span>
+      <select id="launchConfigSelect" class="run-select" title="Select Launch Config / Flavor">
+        <option value="__default__">Default (Current App)</option>
+      </select>
+      <button id="runDebugBtn" class="run-icon-btn play" title="Run & Debug">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M4.2 2.6a.8.8 0 0 1 1.2-.7l8 5.4a.8.8 0 0 1 0 1.4l-8 5.4a.8.8 0 0 1-1.2-.7V2.6z"/>
+        </svg>
+      </button>
+      <div id="debugActiveControls" class="debug-active-group">
+        <button id="hotReloadBtn" class="run-icon-btn reload" title="Hot Reload">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M9.3 1.5L3.5 9h4.1l-.9 5.5L12.5 7H8.4l.9-5.5z"/>
+          </svg>
+        </button>
+        <button id="hotRestartBtn" class="run-icon-btn restart" title="Hot Restart">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/>
+            <path d="M13.5 2v2.5H11"/>
+          </svg>
+        </button>
+        <button id="stopDebugBtn" class="run-icon-btn stop" title="Stop">
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
+            <rect x="2.5" y="2.5" width="11" height="11" rx="1.8"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 1. Connected Devices Header & List (Screenshot Capture) -->
+  <div class="section-header" style="padding: 5px 10px 4px 12px; border-top: 1px solid var(--border);">
+    <span id="lblConnectedDevices">Connected Devices</span>
+    <div class="header-actions">
+      <button id="refreshBtn" class="icon-btn" title="Refresh Devices">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/>
+          <path d="M13.5 2v2.5H11"/>
+        </svg>
+        <span id="lblRefresh">Refresh</span>
       </button>
     </div>
   </div>
@@ -1534,48 +2039,42 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
 
-  <!-- 4. Rotation, Shape & Resolution Controls -->
-  <div class="tools-row">
-    <div class="tool-group">
-      <button id="rotateLeftBtn" class="icon-btn" disabled title="Rotate Left">
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9"/>
-          <path d="M2.5 2v2.5H5"/>
-        </svg>
-        <span id="lblRotateLeft">Rotate Left</span>
-      </button>
-      <button id="rotateRightBtn" class="icon-btn" disabled title="Rotate Right">
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/>
-          <path d="M13.5 2v2.5H11"/>
-        </svg>
-        <span id="lblRotateRight">Rotate Right</span>
-      </button>
-      <button id="gridBtn" class="icon-btn" disabled title="Toggle Pixel Grid">
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
-          <rect x="2" y="2" width="12" height="12" rx="1"/>
-          <line x1="6" y1="2" x2="6" y2="14"/>
-          <line x1="10" y1="2" x2="10" y2="14"/>
-          <line x1="2" y1="6" x2="14" y2="6"/>
-          <line x1="2" y1="10" x2="14" y2="10"/>
-        </svg>
-      </button>
-    </div>
-    <div class="tool-group">
-      <select id="shapeSelect" class="select-mini" disabled>
-        <option id="optShapeRect" value="rectangular">Rectangular</option>
-        <option id="optShapeRounded" value="rounded">Rounded</option>
-      </select>
-      <select id="resolutionSelect" class="select-mini" disabled>
-        <option value="100">100%</option>
-        <option value="75">75%</option>
-        <option value="50">50%</option>
-        <option value="25">25%</option>
-      </select>
-    </div>
+  <!-- 3. Always-Visible Single-Row Capture & Send Action Bar (Above Viewport) -->
+  <div class="capture-action-bar">
+    <button id="recaptureBtn" class="btn btn-icon-action" disabled title="Recapture (R)">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/>
+        <path d="M13.5 2v2.5H11"/>
+      </svg>
+    </button>
+    <button id="copyBtn" class="btn btn-icon-action" disabled title="Copy to Clipboard (Cmd+C)">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/>
+        <path d="M10.5 5.5V3.5a1.5 1.5 0 0 0-1.5-1.5H3.5A1.5 1.5 0 0 0 2 3.5V9a1.5 1.5 0 0 0 1.5 1.5h2"/>
+      </svg>
+    </button>
+    <button id="saveBtn" class="btn btn-icon-action" disabled title="Save (Cmd+S)">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M8 2.5v8M4.5 7.5L8 11l3.5-3.5"/>
+        <path d="M2.5 13h11"/>
+      </svg>
+    </button>
+    <button id="saveAsBtn" class="btn btn-icon-action" disabled title="Save As...">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 1.5h4.5A1.5 1.5 0 0 1 14 6v6a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12V4.5z"/>
+        <path d="M8 7v4M6 9h4"/>
+      </svg>
+    </button>
+    <button id="sendPromptBtn" class="btn btn-prompt-inline" disabled title="Send to AI Prompt">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2L7.5 8.5"/>
+        <path d="M14 2L9.5 14L7.5 8.5L2 6.5L14 2Z"/>
+      </svg>
+      <span id="lblSendToPrompt">Send to Prompt</span>
+    </button>
   </div>
 
-  <!-- 5. Live Screen Preview Area -->
+  <!-- 4. Live Screen Preview Area -->
   <div id="viewport" class="viewport mode-pan">
     <!-- Empty State -->
     <div id="emptyState" class="empty-state">
@@ -1607,18 +2106,52 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
 
     <div id="metaOverlay" class="meta-overlay"></div>
 
+    <!-- Bottom-Right Compact In-Screen Floating HUD (Transform + Scale + Zoom) -->
     <div id="zoomOverlay" class="zoom-overlay">
-      <button id="zoomOutBtn" class="icon-btn" title="Zoom Out">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><line x1="3" y1="8" x2="13" y2="8"/></svg>
+      <button id="rotateLeftBtn" class="hud-btn" disabled title="Rotate Left">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9"/>
+          <path d="M2.5 2v2.5H5"/>
+        </svg>
       </button>
-      <button id="fitBtn" class="icon-btn" title="Fit to Window">
+      <button id="rotateRightBtn" class="hud-btn" disabled title="Rotate Right">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/>
+          <path d="M13.5 2v2.5H11"/>
+        </svg>
+      </button>
+      <button id="gridBtn" class="hud-btn" disabled title="Toggle Pixel Grid">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+          <rect x="2" y="2" width="12" height="12" rx="1"/>
+          <line x1="6" y1="2" x2="6" y2="14"/>
+          <line x1="10" y1="2" x2="10" y2="14"/>
+          <line x1="2" y1="6" x2="14" y2="6"/>
+          <line x1="2" y1="10" x2="14" y2="10"/>
+        </svg>
+      </button>
+      <button id="shapeToggleBtn" class="hud-btn" disabled title="Rounded Corners">
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="2.2" y="2.2" width="11.6" height="11.6" rx="3.8"/>
+        </svg>
+      </button>
+      <select id="resolutionSelect" class="hud-select" disabled title="Resolution Scale">
+        <option value="100">100%</option>
+        <option value="75">75%</option>
+        <option value="50">50%</option>
+        <option value="25">25%</option>
+      </select>
+      <span class="hud-sep"></span>
+      <button id="zoomOutBtn" class="hud-btn" title="Zoom Out">
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><line x1="3" y1="8" x2="13" y2="8"/></svg>
+      </button>
+      <button id="fitBtn" class="hud-btn" title="Fit to Window">
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/>
         </svg>
       </button>
-      <button id="actualBtn" class="icon-btn" title="1:1">1:1</button>
-      <button id="zoomInBtn" class="icon-btn" title="Zoom In">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+      <button id="actualBtn" class="hud-btn" title="1:1" style="width: 24px;">1:1</button>
+      <button id="zoomInBtn" class="hud-btn" title="Zoom In">
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
       </button>
     </div>
 
@@ -1630,54 +2163,11 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
     <div id="toast" class="toast"></div>
   </div>
 
-  <!-- 6. Bottom Action & Save Bar -->
-  <div class="footer">
-    <!-- Row 1: Recapture, Copy Clipboard, Save, and compact Save As Icon Button -->
-    <div class="bottom-actions-top">
-      <button id="recaptureBtn" class="btn" disabled title="Recapture (R)">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/>
-          <path d="M13.5 2v2.5H11"/>
-        </svg>
-        <span id="lblRecapture">Recapture</span>
-      </button>
-      <button id="copyBtn" class="btn" disabled title="Copy to Clipboard (Cmd+C)">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/>
-          <path d="M10.5 5.5V3.5a1.5 1.5 0 0 0-1.5-1.5H3.5A1.5 1.5 0 0 0 2 3.5V9a1.5 1.5 0 0 0 1.5 1.5h2"/>
-        </svg>
-        <span id="lblCopyClipboard">Copy Clipboard</span>
-      </button>
-      <button id="saveBtn" class="btn" disabled title="Save (Cmd+S)">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M8 2.5v8M4.5 7.5L8 11l3.5-3.5"/>
-          <path d="M2.5 13h11"/>
-        </svg>
-        <span id="lblSave">Save</span>
-      </button>
-      <button id="saveAsBtn" class="btn btn-icon-square" disabled title="Save As...">
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 1.5h4.5A1.5 1.5 0 0 1 14 6v6a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12V4.5z"/>
-          <path d="M8 7v4M6 9h4"/>
-        </svg>
-      </button>
-    </div>
-
-    <!-- Row 2: Send to Prompt -->
-    <button id="sendPromptBtn" class="btn btn-prompt" disabled title="Send to AI Prompt">
-      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M14 2L7.5 8.5"/>
-        <path d="M14 2L9.5 14L7.5 8.5L2 6.5L14 2Z"/>
-      </svg>
-      <span id="lblSendToPrompt">Send to Prompt</span>
-    </button>
-
-    <!-- Row 3: Compact Save Path -->
-    <div class="save-dir-row">
-      <span id="lblSaveLocation">Save to:</span>
-      <span id="saveDirText" class="save-dir-path">~/Desktop</span>
-      <button id="configureDirBtn" class="link-btn">Configure</button>
-    </div>
+  <!-- Hidden Save Metadata Store (Configured via Settings Modal) -->
+  <div class="hidden-save-meta">
+    <span id="lblSaveLocation">Save to:</span>
+    <span id="saveDirText">~/Desktop</span>
+    <button id="configureDirBtn">Configure</button>
   </div>
 
   <!-- 7. Settings Overlay Modal -->
@@ -1733,8 +2223,15 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
     const SVG_SIM = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2.5" width="12" height="8.5" rx="1.2"/><line x1="5" y1="13.5" x2="11" y2="13.5"/><line x1="8" y1="11" x2="8" y2="13.5"/></svg>';
 
     const deviceListEl = document.getElementById('deviceList');
+    const runDeviceSelect = document.getElementById('runDeviceSelect');
     const refreshBtn = document.getElementById('refreshBtn');
     const openSettingsBtn = document.getElementById('openSettingsBtn');
+    const runBar = document.getElementById('runBar');
+    const runDebugBtn = document.getElementById('runDebugBtn');
+    const launchConfigSelect = document.getElementById('launchConfigSelect');
+    const hotReloadBtn = document.getElementById('hotReloadBtn');
+    const hotRestartBtn = document.getElementById('hotRestartBtn');
+    const stopDebugBtn = document.getElementById('stopDebugBtn');
     const recaptureBtn = document.getElementById('recaptureBtn');
     const copyBtn = document.getElementById('copyBtn');
     const sendPromptBtn = document.getElementById('sendPromptBtn');
@@ -1757,7 +2254,7 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
     const rotateLeftBtn = document.getElementById('rotateLeftBtn');
     const rotateRightBtn = document.getElementById('rotateRightBtn');
     const gridBtn = document.getElementById('gridBtn');
-    const shapeSelect = document.getElementById('shapeSelect');
+    const shapeToggleBtn = document.getElementById('shapeToggleBtn');
     const resolutionSelect = document.getElementById('resolutionSelect');
 
     const viewport = document.getElementById('viewport');
@@ -1800,7 +2297,18 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
     const saveSettingsBtn = document.getElementById('saveSettingsBtn');
 
     let cachedDevices = [];
+    let cachedOfflineEmulators = [];
     let cachedSelectedId = null;
+    let cachedRunDeviceId = null;
+    let cachedExtraRunTarget = null;
+    let cachedLaunchState = {
+      configs: [],
+      selectedKey: '__default__',
+      isDebugging: false,
+      isFlutterOrDart: false,
+      activeSessionName: '',
+      runningDeviceIds: [],
+    };
 
     let rawSourceImage = null;
     let workingImage = null;
@@ -1828,12 +2336,27 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
     let cursorCanvasPos = null;
 
     function applyTranslations() {
+      document.getElementById('lblRunAndDebug').textContent = t('runAndDebugHeader');
       document.getElementById('lblConnectedDevices').textContent = t('connectedDevices');
+      runDeviceSelect.title = t('selectRunDeviceTitle');
       document.getElementById('lblRefresh').textContent = t('refresh');
       openSettingsBtn.title = t('settings');
-      document.getElementById('lblRecapture').textContent = t('recapture');
-      document.getElementById('lblCopyClipboard').textContent = t('copyClipboard');
+      runDebugBtn.title = t('runAndDebug');
+      hotReloadBtn.title = t('hotReload');
+      hotRestartBtn.title = t('hotRestart');
+      stopDebugBtn.title = t('stopDebug');
+      if (!cachedLaunchState.isDebugging) {
+        launchConfigSelect.title = t('selectFlavorTitle');
+      }
+      if (!cachedLaunchState.configs || cachedLaunchState.configs.length === 0) {
+        const defOpt = launchConfigSelect.querySelector('option[value="__default__"]');
+        if (defOpt) defOpt.textContent = t('defaultLaunchConfig');
+      }
+      renderRunDeviceSpinner(cachedDevices, cachedOfflineEmulators, cachedRunDeviceId, cachedExtraRunTarget);
+      recaptureBtn.title = t('recapture') + ' (R)';
+      copyBtn.title = t('copyClipboard') + ' (Cmd+C)';
       document.getElementById('lblSendToPrompt').textContent = t('sendToPrompt');
+      sendPromptBtn.title = t('sendToPrompt');
 
       document.getElementById('btnToolPan').title = t('toolMove');
       document.getElementById('btnToolPen').title = t('toolPen');
@@ -1856,13 +2379,10 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
       document.getElementById('lblCustomColorTitle').textContent = t('customColorTitle');
       applyCustomColorBtn.textContent = t('apply');
 
-      document.getElementById('lblRotateLeft').textContent = t('rotateLeft');
-      document.getElementById('lblRotateRight').textContent = t('rotateRight');
       rotateLeftBtn.title = t('rotateLeft');
       rotateRightBtn.title = t('rotateRight');
       gridBtn.title = t('gridToggle');
-      document.getElementById('optShapeRect').textContent = t('shapeRectangular');
-      document.getElementById('optShapeRounded').textContent = t('shapeRounded');
+      shapeToggleBtn.title = shapeMode === 'rounded' ? t('shapeRounded') : t('shapeRectangular');
 
       zoomInBtn.title = t('zoomIn');
       zoomOutBtn.title = t('zoomOut');
@@ -1878,8 +2398,8 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
 
       document.getElementById('lblSaveLocation').textContent = t('saveLocation');
       configureDirBtn.textContent = t('configure');
-      document.getElementById('lblSave').textContent = t('save');
-      saveBtn.title = t('save') + ' (Cmd+S)';
+      const curSaveDir = saveDirText.textContent ? ' — ' + saveDirText.textContent : '';
+      saveBtn.title = t('save') + ' (Cmd+S)' + curSaveDir;
       saveAsBtn.title = t('saveAs');
       openTabBtn.title = t('openLargeTab');
 
@@ -2052,13 +2572,13 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
     });
 
     function setControlsEnabled(enabled) {
-      recaptureBtn.disabled = !enabled;
+      recaptureBtn.disabled = !enabled && !cachedSelectedId;
       copyBtn.disabled = !enabled;
       sendPromptBtn.disabled = !enabled;
       rotateLeftBtn.disabled = !enabled;
       rotateRightBtn.disabled = !enabled;
       gridBtn.disabled = !enabled;
-      shapeSelect.disabled = !enabled;
+      shapeToggleBtn.disabled = !enabled;
       resolutionSelect.disabled = !enabled;
       saveBtn.disabled = !enabled;
       saveAsBtn.disabled = !enabled;
@@ -2170,9 +2690,94 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
       showToast(t('toastReset'));
     });
 
+    function renderRunDeviceSpinner(devices, offlineEmulators, runDeviceId, extraTarget) {
+      cachedOfflineEmulators = offlineEmulators || [];
+      cachedRunDeviceId = runDeviceId || null;
+      cachedExtraRunTarget = extraTarget || null;
+      runDeviceSelect.innerHTML = '';
+
+      const list = devices || [];
+      const offlineList = cachedOfflineEmulators;
+      let hasAnyTarget = false;
+
+      if (list.length > 0 || (extraTarget && extraTarget.id)) {
+        const availGroup = document.createElement('optgroup');
+        availGroup.label = t('availableDevicesGroup');
+
+        list.forEach((d) => {
+          hasAnyTarget = true;
+          const opt = document.createElement('option');
+          opt.value = d.id;
+          const platformLabel = d.platform === 'android' ? 'Android' : 'iOS';
+          const transportLabel =
+            d.reality === 'physical'
+              ? d.transport === 'wifi'
+                ? t('wifiBadge')
+                : t('usbBadge')
+              : d.platform === 'android'
+              ? 'Emulator'
+              : 'Simulator';
+          const isRunningOnThis =
+            Array.isArray(cachedLaunchState.runningDeviceIds) &&
+            cachedLaunchState.runningDeviceIds.some((rid) => String(rid).toLowerCase() === String(d.id).toLowerCase());
+          opt.textContent = \`\${isRunningOnThis ? '● ' : ''}\${d.name} · \${platformLabel} (\${transportLabel})\`;
+          if (d.id === cachedRunDeviceId) {
+            opt.selected = true;
+          }
+          availGroup.appendChild(opt);
+        });
+
+        if (extraTarget && extraTarget.id && !list.some((d) => d.id === extraTarget.id)) {
+          hasAnyTarget = true;
+          const opt = document.createElement('option');
+          opt.value = extraTarget.id;
+          opt.textContent = extraTarget.label || extraTarget.id;
+          if (extraTarget.id === cachedRunDeviceId) {
+            opt.selected = true;
+          }
+          availGroup.appendChild(opt);
+        }
+
+        runDeviceSelect.appendChild(availGroup);
+      }
+
+      if (offlineList.length > 0) {
+        const offlineGroup = document.createElement('optgroup');
+        offlineGroup.label = t('offlineEmulatorsGroup');
+
+        offlineList.forEach((em) => {
+          hasAnyTarget = true;
+          const opt = document.createElement('option');
+          opt.value = em.id;
+          const coldSuffix = em.coldBoot ? ' (cold boot)' : '';
+          opt.textContent = \`▷ Start \${em.name}\${coldSuffix}\`;
+          if (em.id === cachedRunDeviceId) {
+            opt.selected = true;
+          }
+          offlineGroup.appendChild(opt);
+        });
+
+        runDeviceSelect.appendChild(offlineGroup);
+      }
+
+      if (!hasAnyTarget) {
+        const emptyOpt = document.createElement('option');
+        emptyOpt.value = '__none__';
+        emptyOpt.textContent = t('noRunDevice');
+        emptyOpt.selected = true;
+        runDeviceSelect.appendChild(emptyOpt);
+      }
+
+      const moreOpt = document.createElement('option');
+      moreOpt.value = '__open_picker__';
+      moreOpt.textContent = t('moreDevicesOrEmulator');
+      runDeviceSelect.appendChild(moreOpt);
+    }
+
     function renderDeviceList(devices, selectedId) {
       cachedDevices = devices || [];
       cachedSelectedId = selectedId;
+      recaptureBtn.disabled = !rawSourceImage && !cachedSelectedId;
       deviceListEl.innerHTML = '';
       if (!devices || devices.length === 0) {
         deviceListEl.innerHTML = \`<div class="empty-devices">\${t('noDevicesFound')}</div>\`;
@@ -2227,6 +2832,61 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
 
         deviceListEl.appendChild(item);
       });
+    }
+
+    function syncRunPlayButtonVisibility() {
+      const isDebugging = !!cachedLaunchState.isDebugging;
+      runBar.classList.toggle('running', isDebugging);
+      if (!isDebugging) {
+        runBar.classList.remove('can-launch-another');
+        return;
+      }
+      const runningIds = Array.isArray(cachedLaunchState.runningDeviceIds)
+        ? cachedLaunchState.runningDeviceIds.map((r) => String(r).toLowerCase())
+        : [];
+      const curTarget = String(cachedRunDeviceId || '').toLowerCase();
+      const canLaunchAnother =
+        runningIds.length > 0 &&
+        curTarget &&
+        curTarget !== '__none__' &&
+        !runningIds.includes(curTarget);
+      runBar.classList.toggle('can-launch-another', !!canLaunchAnother);
+    }
+
+    function renderLaunchState(state) {
+      if (!state) return;
+      const prevRunningKey = (cachedLaunchState.runningDeviceIds || []).join(',');
+      cachedLaunchState = state;
+
+      launchConfigSelect.innerHTML = '';
+      if (!state.configs || state.configs.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '__default__';
+        opt.textContent = t('defaultLaunchConfig');
+        launchConfigSelect.appendChild(opt);
+        launchConfigSelect.value = '__default__';
+      } else {
+        state.configs.forEach((cfg) => {
+          const opt = document.createElement('option');
+          opt.value = cfg.key;
+          opt.textContent = cfg.label;
+          if (cfg.key === state.selectedKey) {
+            opt.selected = true;
+          }
+          launchConfigSelect.appendChild(opt);
+        });
+      }
+
+      launchConfigSelect.title =
+        state.isDebugging && state.activeSessionName
+          ? \`● \${state.activeSessionName}\`
+          : t('selectFlavorTitle');
+
+      const nextRunningKey = (state.runningDeviceIds || []).join(',');
+      if (prevRunningKey !== nextRunningKey) {
+        renderRunDeviceSpinner(cachedDevices, cachedOfflineEmulators, cachedRunDeviceId, cachedExtraRunTarget);
+      }
+      syncRunPlayButtonVisibility();
     }
 
     function drawSingleAnnotation(context, ann) {
@@ -2672,8 +3332,49 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
       }
     });
 
+    zoomOverlay.addEventListener('mousedown', (e) => e.stopPropagation());
+    zoomOverlay.addEventListener('click', (e) => e.stopPropagation());
+
+    runDeviceSelect.addEventListener('change', () => {
+      if (runDeviceSelect.value === '__open_picker__') {
+        renderRunDeviceSpinner(cachedDevices, cachedOfflineEmulators, cachedRunDeviceId, cachedExtraRunTarget);
+        vscode.postMessage({ command: 'selectIdeDevice' });
+        return;
+      }
+      if (runDeviceSelect.value && runDeviceSelect.value !== '__none__') {
+        cachedRunDeviceId = runDeviceSelect.value;
+        syncRunPlayButtonVisibility();
+        vscode.postMessage({ command: 'selectRunDevice', deviceId: cachedRunDeviceId });
+      }
+    });
+
     refreshBtn.addEventListener('click', () => {
       vscode.postMessage({ command: 'refreshDevices' });
+    });
+
+    launchConfigSelect.addEventListener('change', () => {
+      vscode.postMessage({ command: 'selectLaunchConfig', key: launchConfigSelect.value });
+    });
+
+    runDebugBtn.addEventListener('click', () => {
+      vscode.postMessage({
+        command: 'runLaunch',
+        key: launchConfigSelect.value,
+        runDeviceId: runDeviceSelect.value,
+        noDebug: false,
+      });
+    });
+
+    hotReloadBtn.addEventListener('click', () => {
+      vscode.postMessage({ command: 'hotReload' });
+    });
+
+    hotRestartBtn.addEventListener('click', () => {
+      vscode.postMessage({ command: 'hotRestart' });
+    });
+
+    stopDebugBtn.addEventListener('click', () => {
+      vscode.postMessage({ command: 'stopDebug' });
     });
 
     recaptureBtn.addEventListener('click', () => {
@@ -2705,11 +3406,14 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
     });
 
     gridBtn.addEventListener('click', () => {
-      gridOverlay.classList.toggle('visible');
+      const active = gridOverlay.classList.toggle('visible');
+      gridBtn.classList.toggle('active', active);
     });
 
-    shapeSelect.addEventListener('change', () => {
-      shapeMode = shapeSelect.value;
+    shapeToggleBtn.addEventListener('click', () => {
+      shapeMode = shapeMode === 'rectangular' ? 'rounded' : 'rectangular';
+      shapeToggleBtn.classList.toggle('active', shapeMode === 'rounded');
+      shapeToggleBtn.title = shapeMode === 'rounded' ? t('shapeRounded') : t('shapeRectangular');
       renderCanvas(false);
     });
 
@@ -2778,7 +3482,8 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
       if (
         document.activeElement === floatingTextInput ||
         document.activeElement === hexColorInput ||
-        document.activeElement === settingsAdbPathInput
+        document.activeElement === settingsAdbPathInput ||
+        (document.activeElement && document.activeElement.tagName === 'SELECT')
       ) {
         return;
       }
@@ -2801,6 +3506,20 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
       switch (msg.command) {
         case 'scanningDevices':
           deviceListEl.innerHTML = \`<div class="empty-devices">\${t('scanningDevices')}</div>\`;
+          break;
+
+        case 'launchStateUpdated':
+          if (msg.offlineEmulators !== undefined) {
+            cachedOfflineEmulators = msg.offlineEmulators;
+          }
+          if (msg.runDeviceId !== undefined) {
+            cachedRunDeviceId = msg.runDeviceId;
+          }
+          if (msg.extraRunTarget !== undefined) {
+            cachedExtraRunTarget = msg.extraRunTarget;
+          }
+          renderLaunchState(msg.state);
+          renderRunDeviceSpinner(cachedDevices, cachedOfflineEmulators, cachedRunDeviceId, cachedExtraRunTarget);
           break;
 
         case 'settingsUpdated':
@@ -2846,8 +3565,21 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
             customColors = msg.customColors.slice(0, 3);
             renderCustomColors();
           }
-          applyTranslations();
+          if (msg.offlineEmulators !== undefined) {
+            cachedOfflineEmulators = msg.offlineEmulators;
+          }
+          if (msg.runDeviceId !== undefined) {
+            cachedRunDeviceId = msg.runDeviceId;
+          }
+          if (msg.extraRunTarget !== undefined) {
+            cachedExtraRunTarget = msg.extraRunTarget;
+          }
+          if (msg.launchState) {
+            renderLaunchState(msg.launchState);
+          }
           renderDeviceList(msg.devices, msg.selectedDeviceId);
+          renderRunDeviceSpinner(cachedDevices, cachedOfflineEmulators, cachedRunDeviceId, cachedExtraRunTarget);
+          applyTranslations();
           break;
 
         case 'capturing':
