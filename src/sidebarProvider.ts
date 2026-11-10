@@ -389,6 +389,11 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
           break;
         }
 
+        case 'openSponsorLink': {
+          vscode.env.openExternal(vscode.Uri.parse('https://buymeacoffee.com/etoxiuq'));
+          break;
+        }
+
         case 'openInLargeTab':
           if (this._selectedDevice) {
             await ScreenshotPanel.createOrShow(
@@ -1663,6 +1668,27 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
       border-top: 1px solid var(--border);
     }
 
+    .btn-bmc {
+      background: rgba(255, 221, 0, 0.14);
+      border: 1px solid rgba(255, 221, 0, 0.42);
+      color: #ffdd00;
+      border-radius: 6px;
+      padding: 4px 9px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.12s ease;
+    }
+
+    .btn-bmc:hover {
+      background: rgba(255, 221, 0, 0.25);
+      border-color: rgba(255, 221, 0, 0.7);
+      color: #ffe84d;
+    }
+
     /* Compact Top Run & Debug Card (Separated from Screenshot Device List) */
     .run-card {
       margin: 5px 8px 6px 8px;
@@ -2204,7 +2230,10 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
       </div>
 
       <div class="settings-footer">
-        <button id="openIdeSettingsLink" class="link-btn">IDE Settings...</button>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button id="openIdeSettingsLink" class="link-btn">IDE Settings...</button>
+          <button id="sponsorBtn" class="btn-bmc" title="Support on Buy Me a Coffee">☕ Buy Me a Coffee</button>
+        </div>
         <button id="saveSettingsBtn" class="btn btn-primary" style="padding: 5px 14px;">Apply</button>
       </div>
     </div>
@@ -2294,6 +2323,7 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
     const settingsAdbPathInput = document.getElementById('settingsAdbPathInput');
     const settingsStatusBarCheck = document.getElementById('settingsStatusBarCheck');
     const openIdeSettingsLink = document.getElementById('openIdeSettingsLink');
+    const sponsorBtn = document.getElementById('sponsorBtn');
     const saveSettingsBtn = document.getElementById('saveSettingsBtn');
 
     let cachedDevices = [];
@@ -2453,6 +2483,10 @@ export class ScreenshotSidebarProvider implements vscode.WebviewViewProvider {
 
     openIdeSettingsLink.addEventListener('click', () => {
       vscode.postMessage({ command: 'openIdeSettings' });
+    });
+
+    sponsorBtn.addEventListener('click', () => {
+      vscode.postMessage({ command: 'openSponsorLink' });
     });
 
     saveSettingsBtn.addEventListener('click', () => {

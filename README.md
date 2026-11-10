@@ -2,6 +2,8 @@
 
 Capture live screenshots from connected **Android & iOS physical devices** (as well as emulators and simulators) and control **Run & Debug (Target Device, Flavor, Offline Emulator Boot, Hot Reload)** directly inside a single compact **VS Code** & **Antigravity IDE** Left Sidebar — complete with built-in **Markup, Non-Destructive Eraser, Crop, Translucent HUD, and 1-Click Send to Active AI Prompt (Copilot Chat & Antigravity)**.
 
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/etoxiuq)
+
 ![Device Screenshot Sidebar Preview](media/preview-sidebar-v102.png)
 
 ---
@@ -67,6 +69,15 @@ Full UI localization (selectable via the header **Settings (`⚙`)** button or I
 - **커스텀 컬러 & 굵기 선택**: 5가지 기본 컬러 + 최대 3개 자동 저장 커스텀 컬러(`#HEX` 지원) + 3단계 원형 굵기 선택기 제공.
 - **반투명 인스크린 플로팅 편집/줌 바**: 스크린샷 우측 하단에 회전(`90°`), 픽셀 그리드, 둥근 모서리, 해상도 배율(`100%~25%`), 확대/축소(`-`, `Fit`, `1:1`, `+`) 버튼을 **반투명 플로팅 바**로 집약해 세로 공간을 아끼면서도 뒤쪽 스크린샷 화면이 그대로 비쳐 보입니다.
 - **12개 국어 지원**: 상단 `⚙` 설정 버튼에서 영어(`en`), 한국어(`ko`), 일본어(`ja`), 중국어(`zh`) 등 12개 언어를 즉시 전환할 수 있습니다.
+
+---
+
+## Support & Sponsor
+
+If this extension saves your mobile debugging & AI pair-programming time, consider buying me a coffee! ☕  
+이 확장 프로그램이 개발 시간을 아껴주었다면 따뜻한 커피 한 잔으로 응원해 주세요! ☕
+
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/etoxiuq)
 
 ---
 
